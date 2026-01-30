@@ -11,6 +11,7 @@ import datetime
 from data_loader import load_chunk_pdf, embed_texts
 from vector_db import QdrantStorage
 from custom_type import RAGChunkAndSrc, RAGQueryResult, RAGSearchResult, RAGUpsertResult
+from agent_core import research_agent
 
 load_dotenv()
 
@@ -49,55 +50,47 @@ async def rag_ingest_pdf(ctx: inngest.Context):
     return ingested.model_dump()
 
 @inngest_client.create_function(
-    fn_id="RAG: Query PDF",
+    fn_id="RAG: Research Agent",
     trigger=inngest.TriggerEvent(event="rag/query_pdf_ai")
 )
 async def rag_query_pdf_ai(ctx: inngest.Context):
-    def _search(question: str, top_k: int = 5):
-        query_vec = embed_texts([question])[0]
-        store = QdrantStorage()
-        found = store.search(query_vector=query_vec, top_k=top_k)
-        return RAGSearchResult(contexts=found["contexts"], sources=found["sources"])
-    
     question = ctx.event.data['question']
-    top_k = int(ctx.event.data.get("top_k", 5))
-
-    found = await ctx.step.run("embed-and-search", lambda: _search(question, top_k), output_type=RAGSearchResult)
-
-    context_block = "\n\n".join(f"- {c}" for c in found.contexts)
-    user_content = (
-        "Use the fellowing context to answer the question. \n\n"
-        f"Context:\n{context_block}\n"
-        f"Question:\n{question}\n"
-        "Answer concisely using the context above."
-    )
-    adapter = gemini.Adapter(
-        auth_key=os.getenv("GEMINI_API_KEY"),
-        model="gemini-2.0-flash"
-    )
-
-    res = await ctx.step.ai.infer(
-        "llm-answer",
-        adapter=adapter,
-        body={
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": user_content}]
-                }
-            ],
-            "generationConfig": {
-                "maxOutputTokens": 1024, 
-                "temperature": 0.2
-            },
-            "systemInstruction": {
-                "parts": [{"text": "You answer questions using only the provided contexts."}]
-            }
+    
+    async def run_agent_workflow():
+        # initialize
+        initial_state = {
+            "question": question,
+            "user_id": "default_user", 
+            "router_decision": "",
+            "local_contexts": [],
+            "external_contexts": [],
+            "is_sufficient": False,
+            "sources": [],
+            "final_answer": "",
+            "iteration_count": 0
         }
-    )
+        
+        # Start LangGraph
+        final_state = await research_agent.ainvoke(initial_state)
+        return final_state
 
-    answer = res["candidates"][0]["content"]["parts"][0]["text"].strip()
-    return {"answer": answer, "sources": found.sources, "num_contexts": len(found.contexts)}
+    # Run Agent
+    result_state = await ctx.step.run("agent-reasoning-loop", run_agent_workflow)
+
+    # Process Rejection
+    if result_state.get("router_decision") == "reject":
+        return {
+            "answer": "We're sorry, your request failed the security review or is not an academically related issue, "
+                        "so the system refused to process it.",
+            "sources": [],
+            "num_contexts": 0
+        }
+
+    return {
+        "answer": result_state.get("final_answer", "No answer generated."),
+        "sources": result_state.get("sources", []),
+        "num_contexts": len(result_state.get("local_contexts", []))
+    }
 
 app = FastAPI()
 
