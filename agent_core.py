@@ -6,6 +6,8 @@ from langgraph.graph import StateGraph, END
 from dotenv import load_dotenv
 from vector_db import QdrantStorage
 from data_loader import embed_texts
+from tools import search_arxiv_metadata, download_and_parse_pdf
+from typing import Literal
 
 load_dotenv()
 
@@ -16,9 +18,12 @@ class AgentState(TypedDict):
     router_decision: str       # 'direct', 'research', 'reject'
     local_contexts: List[str]  
     external_contexts: List[str] 
+    external_docs: List[Dict[str, Any]]
     is_sufficient: bool 
     final_answer: str
     sources: List[str]
+    search_history: List[str]
+    retry_count: int
 
 class RouteModel(BaseModel):
     decision: Literal["direct", "research", "reject"] = Field(
@@ -31,6 +36,21 @@ class GradeModel(BaseModel):
         description="Return True if the context contains the essential information needed to answer the question; " \
                     "return False if the information is missing or irrelevant."
     )
+
+class SearchPlan(BaseModel):
+    query: str = Field(description="ArXiv Keyword")
+    max_results: int = Field(description="numbers of scaned paper (5-20)", ge=5, le=20)
+    reason: str = Field(description="decription of searching strategy")
+
+class PaperDecision(BaseModel):
+    paper_id: str
+    action: Literal["read_full", "read_abstract", "skip"] = Field(
+        description="Decide how to read the paper: 'read_full', 'read_abstract', 'skip'"
+    )
+    reason: str = Field(description="Reason of decision")
+
+class SelectionOutput(BaseModel):
+    decisions: List[PaperDecision]
 
 # --- Model Setup ---
 llm_flash = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0)
@@ -120,48 +140,162 @@ async def grade_documents_node(state: AgentState):
 
 
 async def external_search_node(state: AgentState):
-    print("--- [External Search] Triggered (Placeholder) ---")
-    # TODO: Phase 2 with Tavily/ArXiv
-    return {"external_contexts": []}
+    question = state["question"]
+    history = state.get("search_history", [])
+    retry = state.get("retry_count", 0)
+    
+    print(f"--- [External Search] Iteration {retry+1} ---")
 
+    # 1. Plan Search Strategy
+    plan_prompt = (
+        "You are a senior researcher. Please develop an ArXiv search plan based on the user's question.\n"
+        f"Keywords already tried: {history}\n"
+        "Strategy:\n"
+        "1. If it's the first search, use the most core technical keywords.\n"
+        "2. If it's a retry, try broader or synonymous keywords.\n"
+        "3. max_results: Set to 5-10 if the question is niche or specific; set to 15-20 if the question is broad.\n"
+        "Please return JSON."
+    )
+    
+    planner = llm_flash.with_structured_output(SearchPlan)
+    plan = await planner.ainvoke([
+        {"role": "system", "content": plan_prompt},
+        {"role": "user", "content": question}
+    ])
+    
+    print(f"Plan: Query='{plan.query}', Count={plan.max_results}")
+    
+    # 2. Execute Search Strategy
+    candidates = search_arxiv_metadata(query=plan.query, max_results=plan.max_results)
+    
+    if not candidates:
+        print("ArXiv returned 0 results.")
+    
+    # 3. Select Content
+    final_contexts = []
+    final_docs = []
+    
+    if candidates:
+        cand_str = "\n".join([f"ID: {p['id']} | Title: {p['title']}\nAbstract: {p['summary'][:150]}..." for p in candidates])
+        
+        select_prompt = (
+            "Please select papers highly relevant to the question.\n"
+            "Action: 'read_full' (core), 'read_abstract' (background), 'skip' (irrelevant).\n"
+            "If no relevant papers are found, please skip all."
+        )
+        
+        try:
+            selector = llm_flash.with_structured_output(SelectionOutput)
+            sel_res = await selector.ainvoke([
+                {"role": "system", "content": select_prompt},
+                {"role": "user", "content": f"Q: {question}\nList:\n{cand_str}"}
+            ])
+            
+            decisions = {d.paper_id: d.action for d in sel_res.decisions}
+            
+            for paper in candidates:
+                action = "skip"
+                for did, dact in decisions.items():
+                    if did in paper['id'] or paper['id'] in did:
+                        action = dact
+                        break
+                
+                if action == "skip": continue
+                
+                print(f"   Processing {paper['id']}: {action}")
+                content = ""
+                storage_content = ""
+                if action == "read_full":
+                    full = download_and_parse_pdf(paper['url'])
+                    if full.startswith("[Error"):
+                        content = f"[ABSTRACT]: {paper['summary']}"
+                        storage_content = paper['summary']
+                        action = "read_abstract" 
+                    else:
+                        content = f"[FULL]: {full[:10000]}..."
+                        storage_content = full
+                else:
+                    content = f"[ABSTRACT]: {paper['summary']}"
+                    storage_content = paper['summary']
+
+                final_contexts.append(f"Title: {paper['title']}\n{content}")
+                paper['full_content'] = storage_content
+                paper['ingest_type'] = action
+                final_docs.append(paper)
+                
+        except Exception as e:
+            print(f"Selection Error: {e}")
+
+    # 4. Check & Update State
+    new_history = history + [plan.query]
+    
+    if final_docs:
+        print(f"Found {len(final_docs)} useful papers.")
+        return {
+            "external_contexts": final_contexts,
+            "external_docs": final_docs,
+            "sources": state["sources"] + [d['url'] for d in final_docs],
+            "search_history": new_history,
+            "is_sufficient": True
+        }
+    else:
+        print("No relevant papers selected.")
+        return {
+            "external_contexts": [],
+            "external_docs": [],
+            "search_history": new_history,
+            "retry_count": retry + 1,
+            "is_sufficient": False
+        }
 
 async def generate_answer_node(state: AgentState):
-    print("--- [Generator] Synthesizing Answer ---")
+    print("--- [Generator] Synthesizing Detailed Answer ---")
     
     all_contexts = state.get("local_contexts", []) + state.get("external_contexts", [])
-    if not all_contexts:
-        return {
-            "final_answer": "Based on the current database, I am unable to find relevant information to answer your question.",
-            "sources": []
-        }
-    sources = state.get("sources", [])
     
     if not all_contexts:
         return {
-            "final_answer": "We're sorry, no relevant information can be found in the local database, "
-                        "and external search functionality is not currently enabled.",
+            "final_answer": "After multiple searches, "
+                        "we were still unable to find enough information in local databases or external academic sources to answer your question.", 
             "sources": []
         }
 
     context_str = "\n\n".join(all_contexts)
     question = state["question"]
-    
+
     system_prompt = (
-        "You are a context-aware academic assistant.\n"
-        "Your task is to answer users' questions **using only the provided [Context].\n\n"
-        "Violation will be penalized strictly as follows:\n"
-        "1. **Absolutely prohibited** from using your internal training knowledge, common sense, or external information. Even if you know the answer, if it's not in the [Context], you must pretend not to know.\n"
-        "2. If the information in the [Context] is insufficient to answer the question, simply reply: 'Based on the literature in the current database, this question cannot be answered.' Do not attempt to generate definitions or explanations.\n"
-        "3. Your answer must be a summary or reorganization extracted from the [Context], without adding additional viewpoints.\n"
-        "4. Sources must be cited, and the sources must actually exist in the [Context]."
+        "You are a leading academic literature review researcher, writing a literature review chapter for a top-tier journal."
+        "Your task is to answer the user's question based on the provided [Context]."
+        "### Core Principles"
+        "1. **Depth and Detail**: Don't just provide an abstract. Delve into the technical details, experimental data, architecture design, parameter settings, and mathematical principles of the literature."
+        "2. **Synthesis and Comparison**: Don't list every single article. Synthesize viewpoints from different sources. For example: 'While [Source A] advocates method X, [Source B] points out that this method fails in case Y and proposes Z as an improvement.'"
+        "3. **Strict Citations**: Every statement that comes from a literature source must be cited at the end of the sentence (e.g., [Source: http://arxiv...]). Do not cite sources that are not present in the Context."
+        "4. **Honesty**: If specific details (such as specific learning rates or hardware specifications) are lacking in the Context, clearly state that they are 'not mentioned in the text'; do not fabricate them. \n\n"
+        "### Output Format (Markdown)\n"
+        "Please organize your answer according to the following structure (adjust according to the amount of content):\n"
+        "1. **Executive Summary**:** Answer the core conclusions of the question in concise language.\n"
+        "2. **Technical Analysis**:\n"
+        " - Explain the core concepts, model architecture, or algorithm flow in detail.\n"
+        " - If mentioned, please list specific data (such as accuracy, number of parameters, training cost).\n"
+        "3. **Comparison**:** (If there are multiple papers) Compare the advantages and disadvantages of different methods.\n"
+        "4. **Conclusion & Limitations**:** Summarize the current research progress and potential shortcomings.\n\n"
+        "### Tone\n"
+        "Professional, objective, and academically rigorous, yet logically clear and easy to read."
     )
     
-    response = await llm_smart.ainvoke([
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Context:\n{context_str}\n\nQuestion: {question}"}
-    ])
-    
-    return {"final_answer": response.content}
+    try:
+        response = await llm_smart.ainvoke(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Context Files:\n{context_str}\n\nResearch Question: {question}"}
+            ],
+            config={"configurable": {"temperature": 0.4}} 
+        )
+        return {"final_answer": response.content}
+        
+    except Exception as e:
+        print(f"Generator Error: {e}")
+        return {"final_answer": "An error occurred while generating the answer. Please try again later."}
 
 
 # --- Graph Construction ---
@@ -208,8 +342,22 @@ def create_research_graph():
         }
     )
 
+    def search_condition(state):
+        if state["external_contexts"]:
+            return "generate_answer"
+        if state["retry_count"] < 3:
+            return "external_search"
+        return "generate_answer"
+
     # [Edge 4] External Search -> Generation
-    workflow.add_edge("external_search", "generate_answer")
+    workflow.add_conditional_edges(
+        "external_search", 
+        search_condition, 
+        {
+            "generate_answer": "generate_answer", 
+            "external_search": "external_search"
+        }
+    )
     
     # [Edge 5] Generator -> END
     workflow.add_edge("generate_answer", END)

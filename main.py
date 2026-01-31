@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import uuid
 import os
 import datetime
-from data_loader import load_chunk_pdf, embed_texts
+from data_loader import load_chunk_pdf, embed_texts, chunk_text
 from vector_db import QdrantStorage
 from custom_type import RAGChunkAndSrc, RAGQueryResult, RAGSearchResult, RAGUpsertResult
 from agent_core import research_agent
@@ -64,6 +64,7 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
             "router_decision": "",
             "local_contexts": [],
             "external_contexts": [],
+            "external_docs": [],
             "is_sufficient": False,
             "sources": [],
             "final_answer": "",
@@ -85,6 +86,19 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
             "sources": [],
             "num_contexts": 0
         }
+    
+    # external docs
+    external_docs = result_state.get("external_docs", [])
+    if external_docs:
+        events = []
+        for doc in external_docs:
+            events.append(inngest.Event(
+                name="rag/ingest_external_doc",
+                data={"document": doc}
+            ))
+        
+        if events:
+            await ctx.step.send_event("trigger-auto-ingest", events=events)
 
     return {
         "answer": result_state.get("final_answer", "No answer generated."),
@@ -92,6 +106,42 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
         "num_contexts": len(result_state.get("local_contexts", []))
     }
 
+@inngest_client.create_function(
+    fn_id="RAG: Ingest External Doc",
+    trigger=inngest.TriggerEvent(event="rag/ingest_external_doc")
+)
+async def rag_ingest_external_doc(ctx: inngest.Context):
+    doc = ctx.event.data['document']
+    source_id = doc.get('url')
+    text_content = doc.get('full_content', '')
+    
+    if not text_content:
+        return {"status": "skipped", "reason": "empty content"}
+
+    chunks = chunk_text(text_content)
+    
+    vecs = embed_texts(chunks)
+    ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{i}")) for i in range(len(chunks))]
+    
+    payloads = [{
+        "source": source_id, 
+        "text": chunks[i], 
+        "title": doc.get('title'),
+        "type": "external_arxiv",
+        "ingest_type": doc.get('ingest_type')
+    } for i in range(len(chunks))]
+
+    QdrantStorage().upsert(ids, vecs, payloads)
+    
+    return {
+        "status": "success", 
+        "source": source_id, 
+        "chunks": len(chunks),
+        "ingest_type": doc.get('ingest_type')
+    }
+
+
+
 app = FastAPI()
 
-inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf, rag_query_pdf_ai])
+inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf, rag_query_pdf_ai, rag_ingest_external_doc])
