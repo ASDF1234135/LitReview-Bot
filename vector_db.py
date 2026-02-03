@@ -1,4 +1,4 @@
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 from qdrant_client.models import VectorParams, Distance, PointStruct, NearestQuery
 
 class QdrantStorage:
@@ -15,13 +15,31 @@ class QdrantStorage:
         points = [PointStruct(id=ids[i], vector=vectors[i], payload=payloads[i]) for i in range(len(ids))]
         self.client.upsert(self.collection, points=points)
 
-    def search(self, query_vector, top_k=5):
+    def search(self, query_vector, top_k=5, user_id=None):
+        query_filter = None
+        
+        if user_id:
+            query_filter = models.Filter(
+                should=[
+                    models.FieldCondition(
+                        key="user_id",
+                        match=models.MatchValue(value=user_id)
+                    ),
+                    models.FieldCondition(
+                        key="access",
+                        match=models.MatchValue(value="public")
+                    )
+                ]
+            )
+
         response = self.client.query_points(
             collection_name=self.collection,
             query=query_vector,
             with_payload=True,
-            limit=top_k
+            limit=top_k,
+            query_filter=query_filter
         )
+        
         results = response.points
         contexts = []
         sources = set()

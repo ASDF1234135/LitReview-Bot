@@ -102,11 +102,11 @@ async def local_search_node(state: AgentState):
         query_vec = embed_texts([query])[0]
         
         store = QdrantStorage()
-        found = store.search(query_vector=query_vec, top_k=5)
+        found = store.search(query_vector=query_vec, top_k=5, user_id=state["user_id"])
         
         return {
             "local_contexts": found["contexts"],
-            "sources": found["sources"]
+            "sources": found["sources"],
         }
     except Exception as e:
         print(f"Search Error: {e}")

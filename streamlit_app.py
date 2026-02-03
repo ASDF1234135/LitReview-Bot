@@ -27,7 +27,7 @@ def save_uploaded_pdf(file) -> Path:
     return file_path
 
 
-async def send_rag_ingest_event(pdf_path: Path) -> None:
+async def send_rag_ingest_event(pdf_path: Path, user_id: str) -> None:
     client = get_inngest_client()
     await client.send(
         inngest.Event(
@@ -35,19 +35,26 @@ async def send_rag_ingest_event(pdf_path: Path) -> None:
             data={
                 "pdf_path": str(pdf_path.resolve()),
                 "source_id": pdf_path.name,
+                "user_id": user_id,
             },
         )
     )
 
+with st.sidebar:
+    st.header("User setting")
+    user_id = st.text_input("User ID", value="default_user")
+    st.info(f"Current user: `{user_id}`\n\nYour uploaded PDF will be marked as private, while ArXiv search results will be publicly shared.")
 
-st.title("Upload a PDF to Ingest")
+st.title("📚 AI Agentic RAG")
+
+
 uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=False)
 
 if uploaded is not None:
-    with st.spinner("Uploading and triggering ingestion..."):
+    with st.spinner(f"Ingesting {uploaded.name} as {user_id}..."):
         path = save_uploaded_pdf(uploaded)
         # Kick off the event and block until the send completes
-        asyncio.run(send_rag_ingest_event(path))
+        asyncio.run(send_rag_ingest_event(path, user_id))
         # Small pause for user feedback continuity
         time.sleep(0.3)
     st.success(f"Triggered ingestion for: {path.name}")
@@ -57,7 +64,7 @@ st.divider()
 st.title("Ask a question about your PDFs")
 
 
-async def send_rag_query_event(question: str, top_k: int) -> None:
+async def send_rag_query_event(question: str, top_k: int, user_id: str) -> None:
     client = get_inngest_client()
     result = await client.send(
         inngest.Event(
@@ -65,6 +72,7 @@ async def send_rag_query_event(question: str, top_k: int) -> None:
             data={
                 "question": question,
                 "top_k": top_k,
+                "user_id": user_id,
             },
         )
     )
@@ -111,7 +119,7 @@ with st.form("rag_query_form"):
     if submitted and question.strip():
         with st.spinner("Sending event and generating answer..."):
             # Fire-and-forget event to Inngest for observability/workflow
-            event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k)))
+            event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k), user_id))
             # Poll the local Inngest API for the run's output
             output = wait_for_run_output(event_id)
             answer = output.get("answer", "")

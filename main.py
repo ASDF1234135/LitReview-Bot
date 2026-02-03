@@ -24,7 +24,8 @@ inngest_client = inngest.Inngest(
 
 @inngest_client.create_function(
     fn_id="RAG: Ingest PDF",
-    trigger=inngest.TriggerEvent(event='rag/ingest_pdf')
+    trigger=inngest.TriggerEvent(event='rag/ingest_pdf'),
+    concurrency=[inngest.Concurrency(limit=5)]
 )
 async def rag_ingest_pdf(ctx: inngest.Context):
     def _load(ctx: inngest.Context) -> RAGChunkAndSrc:
@@ -37,8 +38,15 @@ async def rag_ingest_pdf(ctx: inngest.Context):
         chunks = chunk_and_src.chunks
         source_id = chunk_and_src.source_id
         vecs = embed_texts(chunks)
+        user_id = ctx.event.data.get("user_id", "default_user")
+
         ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{i}")) for i in range(len(chunks))]
-        payloads = [{"source": source_id, "text": chunks[i]} for i in range(len(chunks))]
+        payloads = [{
+                "source": source_id,
+                "text": chunks[i],
+                "user_id": user_id,
+                "access": "private"
+            } for i in range(len(chunks))]
 
         QdrantStorage().upsert(ids, vecs, payloads)
 
@@ -60,7 +68,7 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
         # initialize
         initial_state = {
             "question": question,
-            "user_id": "default_user", 
+            "user_id": ctx.event.data.get("user_id", "default_user"), 
             "router_decision": "",
             "local_contexts": [],
             "external_contexts": [],
@@ -91,10 +99,12 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
     external_docs = result_state.get("external_docs", [])
     if external_docs:
         events = []
+        current_user_id = result_state.get("user_id", "default_user")
+
         for doc in external_docs:
             events.append(inngest.Event(
                 name="rag/ingest_external_doc",
-                data={"document": doc}
+                data={"document": doc, "user_id": current_user_id}
             ))
         
         if events:
@@ -108,12 +118,14 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
 
 @inngest_client.create_function(
     fn_id="RAG: Ingest External Doc",
-    trigger=inngest.TriggerEvent(event="rag/ingest_external_doc")
+    trigger=inngest.TriggerEvent(event="rag/ingest_external_doc"),
+    concurrency=[inngest.Concurrency(limit=10)]
 )
 async def rag_ingest_external_doc(ctx: inngest.Context):
     doc = ctx.event.data['document']
     source_id = doc.get('url')
     text_content = doc.get('full_content', '')
+    user_id = ctx.event.data.get("user_id", "system")
     
     if not text_content:
         return {"status": "skipped", "reason": "empty content"}
@@ -128,7 +140,9 @@ async def rag_ingest_external_doc(ctx: inngest.Context):
         "text": chunks[i], 
         "title": doc.get('title'),
         "type": "external_arxiv",
-        "ingest_type": doc.get('ingest_type')
+        "ingest_type": doc.get('ingest_type'),
+        "user_id": user_id,
+        "access": "public"
     } for i in range(len(chunks))]
 
     QdrantStorage().upsert(ids, vecs, payloads)
