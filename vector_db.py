@@ -1,56 +1,145 @@
 from qdrant_client import QdrantClient, models
-from qdrant_client.models import VectorParams, Distance, PointStruct, NearestQuery
+from qdrant_client.models import VectorParams, SparseVectorParams, Distance, PointStruct
+from flashrank import Ranker, RerankRequest
+# [NEW] 引入 FastEmbed 用來算 BM25
+from fastembed import SparseTextEmbedding
+import uuid
 
 class QdrantStorage:
-    def __init__(self, url="http://localhost:6333", collection='docs', dim=3072):
+    def __init__(self, url="http://localhost:6333", collection='research_papers', dim=3072):
         self.client = QdrantClient(url, timeout=30)
         self.collection = collection
+        
+        # [NEW] 初始化 Sparse Embedding Model (本地執行，速度很快)
+        # 使用 Qdrant 官方推薦的 BM25 模型
+        self.sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+        
+        # 初始化 Reranker
+        self.ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir="./opt")
+
+        # 檢查並建立 Collection (支援 Dense + Sparse)
         if not self.client.collection_exists(self.collection):
             self.client.create_collection(
-                collection_name = self.collection,
-                vectors_config = VectorParams(size=dim, distance=Distance.COSINE)
+                collection_name=self.collection,
+                # Dense Config
+                vectors_config={
+                    "dense": VectorParams(size=dim, distance=Distance.COSINE)
+                },
+                # [NEW] Sparse Config
+                sparse_vectors_config={
+                    "sparse": SparseVectorParams(index=models.SparseIndexParams(
+                        on_disk=False,
+                    ))
+                }
             )
-    
-    def upsert(self, ids, vectors, payloads):
-        points = [PointStruct(id=ids[i], vector=vectors[i], payload=payloads[i]) for i in range(len(ids))]
-        self.client.upsert(self.collection, points=points)
 
-    def search(self, query_vector, top_k=5, user_id=None):
-        query_filter = None
+    def upsert(self, texts: list, metadatas: list, vectors: list, user_id: str, access: str):
+        # [NEW] 計算 Sparse Vectors
+        print("--- [DB] Computing Sparse Vectors (BM25) ---")
+        sparse_vectors = list(self.sparse_model.embed(texts))
         
-        if user_id:
-            query_filter = models.Filter(
-                should=[
-                    models.FieldCondition(
-                        key="user_id",
-                        match=models.MatchValue(value=user_id)
-                    ),
-                    models.FieldCondition(
-                        key="access",
-                        match=models.MatchValue(value="public")
-                    )
-                ]
-            )
+        points = []
+        for i, text in enumerate(texts):
+            payload = metadatas[i].copy()
+            payload.update({
+                "text": text,
+                "user_id": user_id,
+                "access": access
+            })
+            
+            points.append(PointStruct(
+                id=str(uuid.uuid4()),
+                # [NEW] 同時存入兩種向量
+                vector={
+                    "dense": vectors[i],
+                    "sparse": sparse_vectors[i].as_object() # 轉為 Qdrant 格式
+                },
+                payload=payload
+            ))
+        
+        self.client.upsert(collection_name=self.collection, points=points)
 
-        response = self.client.query_points(
-            collection_name=self.collection,
-            query=query_vector,
-            with_payload=True,
-            limit=top_k,
-            query_filter=query_filter
+    def search(self, query_vector, query_text, top_k=5, user_id=None, strategy="hybrid"):
+        """
+        真正的混合搜尋策略：
+        1. Dense Search (語意)
+        2. Sparse Search (BM25 關鍵字)
+        3. RRF Fusion (合併結果)
+        4. Rerank (最終精排)
+        """
+        
+        query_filter = models.Filter(
+            should=[
+                models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+                models.FieldCondition(key="access", match=models.MatchValue(value="public"))
+            ]
         )
-        
+
+        limit = top_k * 3 # 取多一點來做 Fusion
+
+        # [NEW] 混合搜尋邏輯
+        if strategy == "hybrid":
+            # 1. 計算 Query 的 Sparse Vector
+            query_sparse = list(self.sparse_model.embed([query_text]))[0]
+
+            # 2. 使用 Prefetch 執行並行搜尋
+            response = self.client.query_points(
+                collection_name=self.collection,
+                prefetch=[
+                    # A. 語意搜尋
+                    models.Prefetch(
+                        query=query_vector,
+                        using="dense",
+                        filter=query_filter,
+                        limit=limit
+                    ),
+                    # B. 關鍵字搜尋 (BM25)
+                    models.Prefetch(
+                        query=query_sparse.as_object(),
+                        using="sparse",
+                        filter=query_filter,
+                        limit=limit
+                    ),
+                ],
+                # C. Fusion: 使用 RRF 合併排名
+                query=models.FusionQuery(
+                    method=models.Fusion.RRF
+                ),
+                limit=limit,
+                with_payload=True
+            )
+        else:
+            # 傳統 Dense Only
+            response = self.client.query_points(
+                collection_name=self.collection,
+                query=query_vector,
+                using="dense",
+                query_filter=query_filter,
+                limit=limit,
+                with_payload=True
+            )
+
         results = response.points
-        contexts = []
-        sources = set()
-
-        for r in results:
-            payload = getattr(r, "payload", None) or {}
-            text = payload.get("text", "")
-            source = payload.get("source", "")
-
-            if text:
-                contexts.append(text)
-                sources.add(source)
         
-        return {"contexts": contexts, "sources": list(sources)}
+        # 格式化
+        formatted_results = []
+        for r in results:
+            formatted_results.append({
+                "id": r.id,
+                "text": r.payload.get("text"),
+                "metadata": {k:v for k,v in r.payload.items() if k not in ['text']}
+            })
+
+        # 最後還是要做一次 Rerank，因為 Fusion 只是粗排
+        if formatted_results:
+            print(f"--- [DB] Reranking {len(formatted_results)} candidates ---")
+            passages = [{"id": r["id"], "text": r["text"]} for r in formatted_results]
+            rerank_req = RerankRequest(query=query_text, passages=passages)
+            ranked = self.ranker.rerank(rerank_req)
+            
+            ranked_ids = [r["id"] for r in ranked[:top_k]]
+            final_results = [r for r in formatted_results if r["id"] in ranked_ids]
+            final_results.sort(key=lambda x: ranked_ids.index(x["id"]))
+            return final_results
+            
+        return formatted_results

@@ -1,133 +1,159 @@
-import asyncio
-from pathlib import Path
-import time
-
 import streamlit as st
-import inngest
-from dotenv import load_dotenv
-import os
 import requests
+import uuid
+import os
+import json
 
-load_dotenv()
+# --- 設定 ---
+API_BASE_URL = "http://localhost:8000"
+USER_ID = "User_William" 
+SESSIONS_FILE = "user_sessions.json" # 用來記憶 thread_ids 的本地小檔案
 
-st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
+st.set_page_config(page_title="AI Research Agent", page_icon="🤖", layout="wide")
 
+def extract_text(content):
+    if isinstance(content, str): return content
+    if isinstance(content, list):
+        return "".join([b.get("text", "") for b in content if isinstance(b, dict)])
+    if isinstance(content, dict): return content.get("answer", str(content))
+    return str(content)
 
-@st.cache_resource
-def get_inngest_client() -> inngest.Inngest:
-    return inngest.Inngest(app_id="rag_app", is_production=False)
+# --- 讀寫 Session 檔案的 Helper ---
+def load_thread_ids(user_id):
+    if os.path.exists(SESSIONS_FILE):
+        with open(SESSIONS_FILE, "r") as f:
+            data = json.load(f)
+            # 只回傳屬於這個 user_id 的對話列表
+            return data.get(user_id, [])
+    return []
 
+def save_thread_ids(user_id, thread_ids):
+    data = {}
+    if os.path.exists(SESSIONS_FILE):
+        with open(SESSIONS_FILE, "r") as f:
+            data = json.load(f)
+            
+    # 更新該 user_id 的對話列表
+    data[user_id] = thread_ids
+    
+    with open(SESSIONS_FILE, "w") as f:
+        json.dump(data, f)
 
-def save_uploaded_pdf(file) -> Path:
-    uploads_dir = Path("uploads")
-    uploads_dir.mkdir(parents=True, exist_ok=True)
-    file_path = uploads_dir / file.name
-    file_bytes = file.getbuffer()
-    file_path.write_bytes(file_bytes)
-    return file_path
+# --- 狀態初始化 ---
+if "thread_ids" not in st.session_state:
+    # 載入時傳入目前的 USER_ID
+    ids = load_thread_ids(USER_ID)
+    if not ids:
+        ids = [f"Session_{uuid.uuid4().hex[:5]}"]
+        save_thread_ids(USER_ID, ids)
+    st.session_state.thread_ids = ids
 
+if "current_thread_id" not in st.session_state:
+    # 預設載入最後一個對話
+    st.session_state.current_thread_id = st.session_state.thread_ids[-1]
 
-async def send_rag_ingest_event(pdf_path: Path, user_id: str) -> None:
-    client = get_inngest_client()
-    await client.send(
-        inngest.Event(
-            name="rag/ingest_pdf",
-            data={
-                "pdf_path": str(pdf_path.resolve()),
-                "source_id": pdf_path.name,
-                "user_id": user_id,
-            },
-        )
-    )
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
+# --- 偵測切換對話：向後端拉取歷史紀錄 ---
+def fetch_history(thread_id):
+    try:
+        res = requests.get(f"{API_BASE_URL}/api/history/{thread_id}")
+        if res.status_code == 200:
+            return res.json().get("history", [])
+    except:
+        pass
+    return []
+
+# 如果發現當前 thread 改變了，或者剛重啟，就去後端拉資料
+if st.session_state.get("last_loaded_thread") != st.session_state.current_thread_id:
+    with st.spinner("Loading history from database..."):
+        st.session_state.messages = fetch_history(st.session_state.current_thread_id)
+        st.session_state.last_loaded_thread = st.session_state.current_thread_id
+
+# --- Sidebar ---
 with st.sidebar:
-    st.header("User setting")
-    user_id = st.text_input("User ID", value="default_user")
-    st.info(f"Current user: `{user_id}`\n\nYour uploaded PDF will be marked as private, while ArXiv search results will be publicly shared.")
+    st.header("💬 Chat Sessions")
+    if st.button("➕ New Chat", use_container_width=True):
+        new_thread_id = f"Session_{uuid.uuid4().hex[:5]}"
+        st.session_state.thread_ids.append(new_thread_id)
+        save_thread_ids(USER_ID, st.session_state.thread_ids) # 存入本地檔案
+        st.session_state.current_thread_id = new_thread_id
+        st.rerun()
 
-st.title("📚 AI Agentic RAG")
-
-
-uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=False)
-
-if uploaded is not None:
-    with st.spinner(f"Ingesting {uploaded.name} as {user_id}..."):
-        path = save_uploaded_pdf(uploaded)
-        # Kick off the event and block until the send completes
-        asyncio.run(send_rag_ingest_event(path, user_id))
-        # Small pause for user feedback continuity
-        time.sleep(0.3)
-    st.success(f"Triggered ingestion for: {path.name}")
-    st.caption("You can upload another PDF if you like.")
-
-st.divider()
-st.title("Ask a question about your PDFs")
-
-
-async def send_rag_query_event(question: str, top_k: int, user_id: str) -> None:
-    client = get_inngest_client()
-    result = await client.send(
-        inngest.Event(
-            name="rag/query_pdf_ai",
-            data={
-                "question": question,
-                "top_k": top_k,
-                "user_id": user_id,
-            },
-        )
+    selected_thread = st.radio(
+        "History",
+        options=reversed(st.session_state.thread_ids), # 反轉陣列，讓最新的在上面
+        index=list(reversed(st.session_state.thread_ids)).index(st.session_state.current_thread_id),
+        label_visibility="collapsed"
     )
 
-    return result[0]
+    if selected_thread != st.session_state.current_thread_id:
+        st.session_state.current_thread_id = selected_thread
+        st.rerun()
 
+    st.divider()
+    st.header("📂 Knowledge Base")
+    st.caption(f"Current User: {USER_ID}")
+    
+    uploaded_file = st.file_uploader("Upload PDF Paper", type=["pdf"])
+    if uploaded_file:
+        temp_dir = "temp_uploads"
+        os.makedirs(temp_dir, exist_ok=True)
+        file_path = os.path.join(temp_dir, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        if st.button("🚀 Process & Ingest", use_container_width=True):
+            with st.spinner("Dispatching to background worker..."):
+                try:
+                    payload = {"file_path": file_path, "user_id": USER_ID}
+                    res = requests.post(f"{API_BASE_URL}/api/trigger-ingest", json=payload)
+                    if res.status_code == 200:
+                        st.success("✅ Ingestion started!")
+                    else:
+                        st.error(f"Error: {res.text}")
+                except Exception as e:
+                    st.error(f"Failed to connect to backend: {e}")
 
-def _inngest_api_base() -> str:
-    # Local dev server default; configurable via env
-    return os.getenv("INNGEST_API_BASE", "http://127.0.0.1:8288/v1")
+# --- Main Area ---
+st.title("🤖 Autonomous Research Agent")
+st.caption(f"Current Thread: `{st.session_state.current_thread_id}`")
 
+# 1. 顯示歷史訊息
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-def fetch_runs(event_id: str) -> list[dict]:
-    url = f"{_inngest_api_base()}/events/{event_id}/runs"
-    resp = requests.get(url)
-    resp.raise_for_status()
-    data = resp.json()
-    return data.get("data", [])
-
-
-def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s: float = 0.5) -> dict:
-    start = time.time()
-    last_status = None
-    while True:
-        runs = fetch_runs(event_id)
-        if runs:
-            run = runs[0]
-            status = run.get("status")
-            last_status = status or last_status
-            if status in ("Completed", "Succeeded", "Success", "Finished"):
-                return run.get("output") or {}
-            if status in ("Failed", "Cancelled"):
-                raise RuntimeError(f"Function run {status}")
-        if time.time() - start > timeout_s:
-            raise TimeoutError(f"Timed out waiting for run output (last status: {last_status})")
-        time.sleep(poll_interval_s)
-
-
-with st.form("rag_query_form"):
-    question = st.text_input("Your question")
-    top_k = st.number_input("How many chunks to retrieve", min_value=1, max_value=20, value=5, step=1)
-    submitted = st.form_submit_button("Ask")
-
-    if submitted and question.strip():
-        with st.spinner("Sending event and generating answer..."):
-            # Fire-and-forget event to Inngest for observability/workflow
-            event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k), user_id))
-            # Poll the local Inngest API for the run's output
-            output = wait_for_run_output(event_id)
-            answer = output.get("answer", "")
-            sources = output.get("sources", [])
-
-        st.subheader("Answer")
-        st.write(answer or "(No answer)")
-        if sources:
-            st.caption("Sources")
-            for s in sources:
-                st.write(f"- {s}")
+# 2. 處理使用者輸入
+if user_query := st.chat_input("Ex: What is Active Learning?"):
+    
+    st.session_state.messages.append({"role": "user", "content": user_query})
+    with st.chat_message("user"):
+        st.markdown(user_query)
+    
+    with st.chat_message("assistant"):
+        with st.spinner("🤖 Agent is researching..."):
+            try:
+                payload = {
+                    "message": user_query,
+                    "user_id": USER_ID,
+                    "thread_id": st.session_state.current_thread_id
+                }
+                
+                response = requests.post(f"{API_BASE_URL}/api/chat", json=payload)
+                
+                if response.status_code == 200:
+                    api_data = response.json()
+                    raw_answer = api_data.get("response", {}).get("answer", "No answer generated.")
+                    clean_answer = extract_text(raw_answer)
+                    
+                    st.markdown(clean_answer)
+                    
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": clean_answer
+                    })
+                else:
+                    st.error(f"Backend Error: {response.text}")
+            except Exception as e:
+                st.error(f"Failed to reach backend: {e}")

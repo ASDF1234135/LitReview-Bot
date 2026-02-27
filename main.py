@@ -1,161 +1,159 @@
-import logging
-from fastapi import FastAPI
+# main.py 的最頂部
+import sys
+import asyncio
+
+# --- 解決 Windows Asyncio 與 Psycopg3 的衝突 ---
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+import os
+import uvicorn
 import inngest
 import inngest.fast_api
-from inngest.experimental import ai
-from inngest.experimental.ai import gemini
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from pathlib import Path
 from dotenv import load_dotenv
-import uuid
-import os
-import datetime
-from data_loader import load_chunk_pdf, embed_texts, chunk_text
-from vector_db import QdrantStorage
-from custom_type import RAGChunkAndSrc, RAGQueryResult, RAGSearchResult, RAGUpsertResult
-from agent_core import research_agent
+from agent_core import get_thread_history
 
+# 1. 載入環境變數 (必須在最上面)
 load_dotenv()
 
-inngest_client = inngest.Inngest(
-    app_id='rag_app',
-    logger=logging.getLogger('uvicorn'),
-    is_production=False,
-    serializer=inngest.PydanticSerializer(),
+# 引入我們的新模組
+from agent_core import run_research_agent
+from vector_db import QdrantStorage
+from data_loader import load_and_chunk_pdf, get_embeddings
+
+# --- 配置 ---
+inngest_client = inngest.Inngest(app_id="rag_agent_app", is_production=False)
+
+app = FastAPI(title="AI Research Agent API")
+
+# 允許跨域 (配合 Streamlit 開發)
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
+# --- Pydantic Models ---
+class ChatRequest(BaseModel):
+    message: str
+    user_id: str = "default_user"
+    thread_id: str = "thread_1"  # 用於記憶對話歷史
+
+class IngestRequest(BaseModel):
+    file_path: str
+    user_id: str
+
+# --- Inngest Functions (背景任務) ---
+
 @inngest_client.create_function(
-    fn_id="RAG: Ingest PDF",
-    trigger=inngest.TriggerEvent(event='rag/ingest_pdf'),
-    concurrency=[inngest.Concurrency(limit=5)]
+    fn_id="RAG: Ingest User PDF",
+    trigger=inngest.TriggerEvent(event="rag/ingest_pdf"),
+    concurrency=[inngest.Concurrency(limit=2)] # 限制同時處理的 PDF 數量，避免 OOM
 )
+# 【唯一修正這裡】：只留下一個 ctx: inngest.Context 參數
 async def rag_ingest_pdf(ctx: inngest.Context):
-    def _load(ctx: inngest.Context) -> RAGChunkAndSrc:
-        pdf_path = ctx.event.data['pdf_path']
-        source_id = ctx.event.data.get("source_id", pdf_path)
-        chunks = load_chunk_pdf(pdf_path)
-        return RAGChunkAndSrc(chunks=chunks, source_id=source_id)
+    """
+    背景任務：當使用者上傳 PDF 時，自動進行語意切片並存入 Qdrant
+    """
+    # 1. 從 ctx 提取 event data
+    data = ctx.event.data
+    pdf_path = Path(data["pdf_path"])
+    user_id = data["user_id"]
 
-    def _upsert(chunk_and_src: RAGChunkAndSrc) -> RAGUpsertResult:
-        chunks = chunk_and_src.chunks
-        source_id = chunk_and_src.source_id
-        vecs = embed_texts(chunks)
-        user_id = ctx.event.data.get("user_id", "default_user")
+    # 2. 從 ctx 提取 step 來執行任務 (加上 ctx. 前綴)
+    chunks = await ctx.step.run("parse_and_chunk", lambda: load_and_chunk_pdf(
+        file_path=pdf_path, 
+        chunk_strategy="semantic"
+    ))
 
-        ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{i}")) for i in range(len(chunks))]
-        payloads = [{
-                "source": source_id,
-                "text": chunks[i],
-                "user_id": user_id,
-                "access": "private"
-            } for i in range(len(chunks))]
+    if not chunks:
+        return {"status": "error", "message": "No text extracted from PDF"}
 
-        QdrantStorage().upsert(ids, vecs, payloads)
+    # Step 2: 準備向量與 Metadata
+    texts = [c["text"] for c in chunks]
+    metadatas = [c["metadata"] for c in chunks]
 
-        return RAGUpsertResult(ingested=len(chunks))
-        
+    # Step 3: 計算向量 (Batch Embedding)
+    vectors = await ctx.step.run("generate_embeddings", lambda: get_embeddings(texts))
 
-    chunk_and_src = await ctx.step.run("load-and-chunk", lambda:_load(ctx), output_type=RAGChunkAndSrc)
-    ingested = await ctx.step.run("embed-and-upsert", lambda:_upsert(chunk_and_src), output_type=RAGUpsertResult)
-    return ingested.model_dump()
+    # Step 4: 存入 Qdrant (標記為 Private)
+    def save_to_db():
+        db = QdrantStorage()
+        db.upsert(
+            texts=texts,
+            metadatas=metadatas,
+            vectors=vectors,
+            user_id=user_id,
+            access="private"
+        )
+        return "Success"
 
-@inngest_client.create_function(
-    fn_id="RAG: Research Agent",
-    trigger=inngest.TriggerEvent(event="rag/query_pdf_ai")
-)
-async def rag_query_pdf_ai(ctx: inngest.Context):
-    question = ctx.event.data['question']
-    
-    async def run_agent_workflow():
-        # initialize
-        initial_state = {
-            "question": question,
-            "user_id": ctx.event.data.get("user_id", "default_user"), 
-            "router_decision": "",
-            "local_contexts": [],
-            "external_contexts": [],
-            "external_docs": [],
-            "is_sufficient": False,
-            "sources": [],
-            "final_answer": "",
-            "iteration_count": 0
-        }
-        
-        # Start LangGraph
-        final_state = await research_agent.ainvoke(initial_state)
-        return final_state
-
-    # Run Agent
-    result_state = await ctx.step.run("agent-reasoning-loop", run_agent_workflow)
-
-    # Process Rejection
-    if result_state.get("router_decision") == "reject":
-        return {
-            "answer": "We're sorry, your request failed the security review or is not an academically related issue, "
-                        "so the system refused to process it.",
-            "sources": [],
-            "num_contexts": 0
-        }
-    
-    # external docs
-    external_docs = result_state.get("external_docs", [])
-    if external_docs:
-        events = []
-        current_user_id = result_state.get("user_id", "default_user")
-
-        for doc in external_docs:
-            events.append(inngest.Event(
-                name="rag/ingest_external_doc",
-                data={"document": doc, "user_id": current_user_id}
-            ))
-        
-        if events:
-            await ctx.step.send_event("trigger-auto-ingest", events=events)
+    result = await ctx.step.run("upsert_to_qdrant", save_to_db)
 
     return {
-        "answer": result_state.get("final_answer", "No answer generated."),
-        "sources": result_state.get("sources", []),
-        "num_contexts": len(result_state.get("local_contexts", []))
+        "status": "completed",
+        "chunks_processed": len(chunks),
+        "source": pdf_path.name
     }
 
-@inngest_client.create_function(
-    fn_id="RAG: Ingest External Doc",
-    trigger=inngest.TriggerEvent(event="rag/ingest_external_doc"),
-    concurrency=[inngest.Concurrency(limit=10)]
-)
-async def rag_ingest_external_doc(ctx: inngest.Context):
-    doc = ctx.event.data['document']
-    source_id = doc.get('url')
-    text_content = doc.get('full_content', '')
-    user_id = ctx.event.data.get("user_id", "system")
-    
-    if not text_content:
-        return {"status": "skipped", "reason": "empty content"}
+# --- API Endpoints ---
 
-    chunks = chunk_text(text_content)
-    
-    vecs = embed_texts(chunks)
-    ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{i}")) for i in range(len(chunks))]
-    
-    payloads = [{
-        "source": source_id, 
-        "text": chunks[i], 
-        "title": doc.get('title'),
-        "type": "external_arxiv",
-        "ingest_type": doc.get('ingest_type'),
-        "user_id": user_id,
-        "access": "public"
-    } for i in range(len(chunks))]
+@app.get("/")
+def read_root():
+    return {"status": "AI Research Agent is running"}
 
-    QdrantStorage().upsert(ids, vecs, payloads)
-    
-    return {
-        "status": "success", 
-        "source": source_id, 
-        "chunks": len(chunks),
-        "ingest_type": doc.get('ingest_type')
-    }
+@app.post("/api/chat")
+async def chat_endpoint(request: ChatRequest):
+    """
+    Agent 對話入口：接收問題 -> Agent 思考與查資料 -> 回傳答案
+    """
+    try:
+        print(f"Received Request: {request.message} (User: {request.user_id})")
+        
+        # 呼叫 agent_core.py 中的 Agent 執行器
+        response = await run_research_agent(
+            user_input=request.message,
+            user_id=request.user_id,
+            thread_id=request.thread_id
+        )
+        
+        return {"response": response}
 
+    except Exception as e:
+        print(f"Error in chat endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/history/{thread_id}")
+async def get_history_endpoint(thread_id: str):
+    """前端用來拉取歷史對話的 API"""
+    try:
+        history = await get_thread_history(thread_id)
+        return {"history": history}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-app = FastAPI()
+# 讓 Streamlit 可以觸發 PDF 入庫的簡單接口
+@app.post("/api/trigger-ingest")
+async def trigger_ingest(request: IngestRequest):
+    await inngest_client.send(
+        inngest.Event(
+            name="rag/ingest_pdf",
+            data={
+                "pdf_path": request.file_path,
+                "user_id": request.user_id
+            }
+        )
+    )
+    return {"status": "Ingestion event dispatched"}
 
-inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf, rag_query_pdf_ai, rag_ingest_external_doc])
+# 註冊 Inngest Handler
+inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf])
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
