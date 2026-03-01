@@ -27,7 +27,8 @@ from vector_db import QdrantStorage
 from data_loader import load_and_chunk_pdf, get_embeddings
 
 # --- 配置 ---
-inngest_client = inngest.Inngest(app_id="rag_agent_app", is_production=False)
+IS_CLOUD = os.getenv("RENDER") is not None
+inngest_client = inngest.Inngest(app_id="rag_agent_app", is_production=IS_CLOUD)
 
 app = FastAPI(title="AI Research Agent API")
 db = QdrantStorage()
