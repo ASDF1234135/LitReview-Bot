@@ -1,23 +1,26 @@
-# locustfile.py
-from locust import HttpUser, task, between
-import random
+import uuid
+from locust import FastHttpUser, task, between
 
-class AgentUser(HttpUser):
-    # 模擬每個用戶發出請求後的思考等待時間 (1 到 5 秒)
-    wait_time = between(1, 5)
+class RAGAgentUser(FastHttpUser):
+    wait_time = between(5, 15)
+
+    def on_start(self):
+        # 只保留 user_id，移除 on_start 裡的 thread_id
+        self.user_id = "Locust_Tester"
 
     @task
     def chat_with_agent(self):
-        # 準備測試用的 Payload
-        payload = {
-            "message": "What is the definition of Active Learning?",
-            "user_id": f"test_user_{random.randint(1, 100)}",
-            "thread_id": f"thread_{random.randint(1, 1000)}"
-        }
+        # 確保每次發送請求，都開啟一個全新的 Thread
+        current_thread_id = f"TestSession_{uuid.uuid4().hex[:8]}"
         
-        # 打您的 FastAPI 端點
+        payload = {
+            "message": "What is Active Learning? Explain based on the provided local documents.",
+            "user_id": self.user_id,
+            "thread_id": current_thread_id
+        }
+
         with self.client.post("/api/chat", json=payload, catch_response=True) as response:
             if response.status_code == 200:
                 response.success()
             else:
-                response.failure(f"Failed with status: {response.status_code}")
+                response.failure(f"HTTP Error {response.status_code}: {response.text}")
