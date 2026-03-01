@@ -3,7 +3,7 @@ from langchain_core.tools import tool
 from vector_db import QdrantStorage
 from data_loader import get_embeddings
 from langchain_core.runnables import RunnableConfig
-# 假設您原本有 arxiv_client，若無可使用簡單 wrapper
+from langchain_community.tools import DuckDuckGoSearchRun
 import arxiv 
 
 db = QdrantStorage()
@@ -72,3 +72,19 @@ def search_arxiv_external(query: str, config: RunnableConfig, max_results: int =
         )
 
     return output
+
+ddg_search = DuckDuckGoSearchRun()
+
+@tool
+def search_web_general(query: str) -> str:
+    """
+    Search the general internet for broad topics, history, tech news, or general concepts.
+    Use this when the user asks for historical context, overviews, or topics where ArXiv is too specific.
+    """
+    print(f"--- [Tool] Web Search: {query} ---")
+    try:
+        # 執行網路搜尋並回傳結果摘要
+        result = ddg_search.invoke(query)
+        return result
+    except Exception as e:
+        return f"Web search failed: {str(e)}"

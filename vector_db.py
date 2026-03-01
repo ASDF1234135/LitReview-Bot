@@ -4,6 +4,7 @@ from flashrank import Ranker, RerankRequest
 # [NEW] 引入 FastEmbed 用來算 BM25
 from fastembed import SparseTextEmbedding
 import uuid
+import os
 
 class QdrantStorage:
     def __init__(self, url="http://localhost:6333", collection='research_papers', dim=3072):
@@ -143,3 +144,59 @@ class QdrantStorage:
             return final_results
             
         return formatted_results
+    
+    def get_user_files(self, user_id: str) -> list:
+        try:
+            records, _ = self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=models.Filter(
+                    must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id))]
+                ),
+                limit=10000,
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            files = set()
+            for r in records:
+                # 抓取 metadata 中的 source (通常是檔案路徑)
+                source = r.payload.get("source")
+                if source:
+                    files.add(os.path.basename(source)) # 只取檔名
+            return list(files)
+        except Exception as e:
+            print(f"--- [DB Error] Failed to get files: {e} ---")
+            return []
+
+    # [NEW] 刪除使用者的特定檔案
+    def delete_user_file(self, user_id: str, filename: str) -> bool:
+        try:
+            # 1. 先找出該使用者所有的 Chunk
+            records, _ = self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=models.Filter(
+                    must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id))]
+                ),
+                limit=10000,
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            # 2. 篩選出檔名相符的 Point IDs
+            ids_to_delete = []
+            for r in records:
+                source = r.payload.get("source", "")
+                if os.path.basename(source) == filename:
+                    ids_to_delete.append(r.id)
+            
+            # 3. 執行批次刪除
+            if ids_to_delete:
+                print(f"--- [DB] Deleting {len(ids_to_delete)} chunks for file: {filename} ---")
+                self.client.delete(
+                    collection_name=self.collection,
+                    points_selector=models.PointIdsList(points=ids_to_delete)
+                )
+            return True
+        except Exception as e:
+            print(f"--- [DB Error] Failed to delete file: {e} ---")
+            return False

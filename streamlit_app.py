@@ -7,7 +7,7 @@ import json
 # --- 設定 ---
 API_BASE_URL = "http://localhost:8000"
 USER_ID = "User_William" 
-SESSIONS_FILE = "user_sessions.json" # 用來記憶 thread_ids 的本地小檔案
+SESSIONS_FILE = "user_sessions.json"
 
 st.set_page_config(page_title="AI Research Agent", page_icon="🤖", layout="wide")
 
@@ -18,44 +18,50 @@ def extract_text(content):
     if isinstance(content, dict): return content.get("answer", str(content))
     return str(content)
 
-# --- 讀寫 Session 檔案的 Helper ---
-def load_thread_ids(user_id):
+# ==========================================
+# 1. Session 讀寫 Helper
+# ==========================================
+def load_threads(user_id):
     if os.path.exists(SESSIONS_FILE):
         with open(SESSIONS_FILE, "r") as f:
             data = json.load(f)
-            # 只回傳屬於這個 user_id 的對話列表
-            return data.get(user_id, [])
-    return []
+            user_data = data.get(user_id, {})
+            if isinstance(user_data, list):
+                return {tid: "New Chat" for tid in user_data}
+            return user_data
+    return {}
 
-def save_thread_ids(user_id, thread_ids):
+def save_threads(user_id, threads_dict):
     data = {}
     if os.path.exists(SESSIONS_FILE):
         with open(SESSIONS_FILE, "r") as f:
             data = json.load(f)
-            
-    # 更新該 user_id 的對話列表
-    data[user_id] = thread_ids
-    
+    data[user_id] = threads_dict
     with open(SESSIONS_FILE, "w") as f:
         json.dump(data, f)
 
-# --- 狀態初始化 ---
-if "thread_ids" not in st.session_state:
-    # 載入時傳入目前的 USER_ID
-    ids = load_thread_ids(USER_ID)
-    if not ids:
-        ids = [f"Session_{uuid.uuid4().hex[:5]}"]
-        save_thread_ids(USER_ID, ids)
-    st.session_state.thread_ids = ids
+# ==========================================
+# 2. 狀態初始化 (修復缺失的 messages 陣列)
+# ==========================================
+if "threads" not in st.session_state:
+    user_threads = load_threads(USER_ID)
+    if not user_threads:
+        new_tid = f"Session_{uuid.uuid4().hex[:5]}"
+        user_threads = {new_tid: "New Chat"}
+        save_threads(USER_ID, user_threads)
+    st.session_state.threads = user_threads
 
 if "current_thread_id" not in st.session_state:
-    # 預設載入最後一個對話
-    st.session_state.current_thread_id = st.session_state.thread_ids[-1]
+    st.session_state.current_thread_id = list(st.session_state.threads.keys())[-1]
 
+# 👉 [補回] 初始化對話紀錄與最後載入的 Thread
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- 偵測切換對話：向後端拉取歷史紀錄 ---
+if "last_loaded_thread" not in st.session_state:
+    st.session_state.last_loaded_thread = None
+
+# 👉 [補回] 向後端拉取歷史記憶的邏輯
 def fetch_history(thread_id):
     try:
         res = requests.get(f"{API_BASE_URL}/api/history/{thread_id}")
@@ -65,35 +71,16 @@ def fetch_history(thread_id):
         pass
     return []
 
-# 如果發現當前 thread 改變了，或者剛重啟，就去後端拉資料
-if st.session_state.get("last_loaded_thread") != st.session_state.current_thread_id:
+if st.session_state.last_loaded_thread != st.session_state.current_thread_id:
     with st.spinner("Loading history from database..."):
         st.session_state.messages = fetch_history(st.session_state.current_thread_id)
         st.session_state.last_loaded_thread = st.session_state.current_thread_id
 
-# --- Sidebar ---
-with st.sidebar:
-    st.header("💬 Chat Sessions")
-    if st.button("➕ New Chat", use_container_width=True):
-        new_thread_id = f"Session_{uuid.uuid4().hex[:5]}"
-        st.session_state.thread_ids.append(new_thread_id)
-        save_thread_ids(USER_ID, st.session_state.thread_ids) # 存入本地檔案
-        st.session_state.current_thread_id = new_thread_id
-        st.rerun()
-
-    selected_thread = st.radio(
-        "History",
-        options=reversed(st.session_state.thread_ids), # 反轉陣列，讓最新的在上面
-        index=list(reversed(st.session_state.thread_ids)).index(st.session_state.current_thread_id),
-        label_visibility="collapsed"
-    )
-
-    if selected_thread != st.session_state.current_thread_id:
-        st.session_state.current_thread_id = selected_thread
-        st.rerun()
-
-    st.divider()
-    st.header("📂 Knowledge Base")
+# ==========================================
+# 3. 檔案管理 Modal (彈出式視窗)
+# ==========================================
+@st.dialog("📂 Knowledge Base Management", width="large")
+def file_management_dialog():
     st.caption(f"Current User: {USER_ID}")
     
     uploaded_file = st.file_uploader("Upload PDF Paper", type=["pdf"])
@@ -103,28 +90,104 @@ with st.sidebar:
         file_path = os.path.join(temp_dir, uploaded_file.name)
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
+        
         if st.button("🚀 Process & Ingest", use_container_width=True):
             with st.spinner("Dispatching to background worker..."):
                 try:
                     payload = {"file_path": file_path, "user_id": USER_ID}
                     res = requests.post(f"{API_BASE_URL}/api/trigger-ingest", json=payload)
                     if res.status_code == 200:
-                        st.success("✅ Ingestion started!")
+                        st.success("✅ Ingestion started! Click Refresh in a few seconds.")
                     else:
                         st.error(f"Error: {res.text}")
                 except Exception as e:
                     st.error(f"Failed to connect to backend: {e}")
 
-# --- Main Area ---
+    st.divider()
+    
+    col1, col2 = st.columns([4, 1])
+    col1.subheader("📄 My Uploaded Files")
+    if col2.button("🔄 Refresh", use_container_width=True):
+        st.rerun() 
+        
+    try:
+        files_res = requests.get(f"{API_BASE_URL}/api/files/{USER_ID}")
+        if files_res.status_code == 200:
+            files = files_res.json().get("files", [])
+            if not files:
+                st.info("No files uploaded yet.")
+            else:
+                for f in files:
+                    fc1, fc2 = st.columns([5, 1])
+                    fc1.write(f"📄 {f}")
+                    if fc2.button("🗑️", key=f"del_{f}", help="Delete this file"):
+                        requests.delete(f"{API_BASE_URL}/api/files/{USER_ID}/{f}")
+                        st.rerun()
+        else:
+            st.error("Could not fetch files.")
+    except:
+        st.error("Backend offline.")
+
+# ==========================================
+# 4. 全新側邊欄 (Sidebar)
+# ==========================================
+with st.sidebar:
+    st.header("💬 Chat Sessions")
+    
+    if st.button("➕ New Chat", use_container_width=True, type="primary"):
+        new_tid = f"Session_{uuid.uuid4().hex[:5]}"
+        st.session_state.threads[new_tid] = "New Chat"
+        save_threads(USER_ID, st.session_state.threads)
+        st.session_state.current_thread_id = new_tid
+        st.rerun()
+
+    st.divider()
+
+    # 👉 垂直對話列表 + "..." 選單
+    for tid, title in reversed(st.session_state.threads.items()):
+        col1, col2 = st.columns([8, 2]) 
+        
+        is_current = (tid == st.session_state.current_thread_id)
+        btn_type = "primary" if is_current else "secondary"
+
+        with col1:
+            if st.button(title, key=f"sel_{tid}", use_container_width=True, type=btn_type):
+                st.session_state.current_thread_id = tid
+                st.rerun()
+                
+        with col2:
+            with st.popover("⋮", use_container_width=True):
+                new_title = st.text_input("Rename", value=title, key=f"ren_{tid}", label_visibility="collapsed")
+                
+                if st.button("💾 Save", key=f"save_{tid}", use_container_width=True):
+                    st.session_state.threads[tid] = new_title
+                    save_threads(USER_ID, st.session_state.threads)
+                    st.rerun()
+                    
+                if st.button("🗑️ Delete", key=f"del_chat_{tid}", type="primary", use_container_width=True):
+                    if len(st.session_state.threads) > 1:
+                        del st.session_state.threads[tid]
+                        save_threads(USER_ID, st.session_state.threads)
+                        if st.session_state.current_thread_id == tid:
+                            st.session_state.current_thread_id = list(st.session_state.threads.keys())[-1]
+                        st.rerun()
+                    else:
+                        st.error("Cannot delete the last chat!")
+
+    st.sidebar.markdown("<br><br><br>", unsafe_allow_html=True) 
+    if st.sidebar.button("📂 Manage Knowledge Base", use_container_width=True):
+        file_management_dialog() 
+
+# ==========================================
+# 5. 主畫面 Chat Interface (結合 Streaming)
+# ==========================================
 st.title("🤖 Autonomous Research Agent")
 st.caption(f"Current Thread: `{st.session_state.current_thread_id}`")
 
-# 1. 顯示歷史訊息
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 2. 處理使用者輸入
 if user_query := st.chat_input("Ex: What is Active Learning?"):
     
     st.session_state.messages.append({"role": "user", "content": user_query})
@@ -132,28 +195,43 @@ if user_query := st.chat_input("Ex: What is Active Learning?"):
         st.markdown(user_query)
     
     with st.chat_message("assistant"):
-        with st.spinner("🤖 Agent is researching..."):
-            try:
-                payload = {
-                    "message": user_query,
-                    "user_id": USER_ID,
-                    "thread_id": st.session_state.current_thread_id
-                }
+        status_container = st.status("🧠 Agent is analysing...", expanded=True)
+        answer_placeholder = st.empty() 
+        
+        try:
+            payload = {
+                "message": user_query,
+                "user_id": USER_ID,
+                "thread_id": st.session_state.current_thread_id
+            }
+            
+            response = requests.post(f"{API_BASE_URL}/api/chat", json=payload, stream=True)
+            
+            if response.status_code == 200:
+                final_answer = ""
                 
-                response = requests.post(f"{API_BASE_URL}/api/chat", json=payload)
+                for line in response.iter_lines():
+                    if line:
+                        data = json.loads(line.decode('utf-8'))
+                        
+                        if data["type"] == "status":
+                            status_container.write(data["content"])
+                            
+                        elif data["type"] == "answer":
+                            final_answer = extract_text(data["content"])
+                            
+                status_container.update(label="✅ Research Completed！", state="complete", expanded=False)
+                answer_placeholder.markdown(final_answer)
                 
-                if response.status_code == 200:
-                    api_data = response.json()
-                    raw_answer = api_data.get("response", {}).get("answer", "No answer generated.")
-                    clean_answer = extract_text(raw_answer)
-                    
-                    st.markdown(clean_answer)
-                    
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": clean_answer
-                    })
-                else:
-                    st.error(f"Backend Error: {response.text}")
-            except Exception as e:
-                st.error(f"Failed to reach backend: {e}")
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": final_answer
+                })
+                
+            else:
+                status_container.update(label="❌ Error!", state="error")
+                st.error(f"Backend Error: {response.text}")
+                
+        except Exception as e:
+            status_container.update(label="❌ Connection Failed", state="error")
+            st.error(f"Failed to reach backend: {e}")

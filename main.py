@@ -15,6 +15,8 @@ from pydantic import BaseModel
 from pathlib import Path
 from dotenv import load_dotenv
 from agent_core import get_thread_history
+from fastapi.responses import StreamingResponse
+from agent_core import run_research_agent_stream, get_thread_history
 
 # 1. 載入環境變數 (必須在最上面)
 load_dotenv()
@@ -28,6 +30,8 @@ from data_loader import load_and_chunk_pdf, get_embeddings
 inngest_client = inngest.Inngest(app_id="rag_agent_app", is_production=False)
 
 app = FastAPI(title="AI Research Agent API")
+db = QdrantStorage()
+
 
 # 允許跨域 (配合 Streamlit 開發)
 from fastapi.middleware.cors import CORSMiddleware
@@ -84,7 +88,6 @@ async def rag_ingest_pdf(ctx: inngest.Context):
 
     # Step 4: 存入 Qdrant (標記為 Private)
     def save_to_db():
-        db = QdrantStorage()
         db.upsert(
             texts=texts,
             metadatas=metadatas,
@@ -111,22 +114,15 @@ def read_root():
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
     """
-    Agent 對話入口：接收問題 -> Agent 思考與查資料 -> 回傳答案
+    使用 StreamingResponse 將 Agent 的思考過程以 SSE 格式推播給前端
     """
     try:
-        print(f"Received Request: {request.message} (User: {request.user_id})")
-        
-        # 呼叫 agent_core.py 中的 Agent 執行器
-        response = await run_research_agent(
-            user_input=request.message,
-            user_id=request.user_id,
-            thread_id=request.thread_id
+        # 將 Generator 丟給 StreamingResponse，並設定 media_type
+        return StreamingResponse(
+            run_research_agent_stream(request.message, request.user_id, request.thread_id),
+            media_type="application/x-ndjson"
         )
-        
-        return {"response": response}
-
     except Exception as e:
-        print(f"Error in chat endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/history/{thread_id}")
@@ -151,6 +147,26 @@ async def trigger_ingest(request: IngestRequest):
         )
     )
     return {"status": "Ingestion event dispatched"}
+
+@app.get("/api/files/{user_id}")
+async def get_files_endpoint(user_id: str):
+    try:
+        files = db.get_user_files(user_id)
+        return {"files": files}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# [NEW] 刪除檔案 API
+@app.delete("/api/files/{user_id}/{filename}")
+async def delete_file_endpoint(user_id: str, filename: str):
+    try:
+        success = db.delete_user_file(user_id, filename)
+        if success:
+            return {"status": "success", "message": f"Deleted {filename}"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to delete from DB")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # 註冊 Inngest Handler
 inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf])

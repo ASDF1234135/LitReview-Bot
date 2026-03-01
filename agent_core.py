@@ -1,16 +1,17 @@
 # agent_core.py
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.prebuilt import create_react_agent
-from tools import search_knowledge_base, search_arxiv_external
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
+from tools import search_knowledge_base, search_arxiv_external, search_web_general
 import os
+import json
 
 # 1. 初始化 LLM
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
 # 2. 定義工具集
-tools = [search_knowledge_base, search_arxiv_external]
+tools = [search_knowledge_base, search_arxiv_external, search_web_general]
 
 # 3. System Prompt (靈魂所在)
 SYSTEM_PROMPT = """
@@ -18,20 +19,70 @@ You are an advanced AI Research Assistant specialized in academic literature rev
 
 **Your Capabilities:**
 1. Retrieve knowledge from a local database using 'search_knowledge_base'.
-2. Search for external papers using 'search_arxiv_external'.
+2. Search for external academic papers using 'search_arxiv_external'.
+3. Search the general internet using 'search_web_general
 
 **Rules of Engagement:**
-1. **Scope Restriction:** You ONLY answer questions related to academic research, literature review, technical concepts, or document analysis. If a user asks about daily life, entertainment, or sensitive topics unrelated to research, politely refuse. You can answer and discuss with memories, but do not use you internal knowledge.
-2. **Search Strategy (Agentic Decision):**
-   - For simple definitions, use 'dense' strategy in local search.
-   - For specific comparisons or fact-checking, use 'hybrid' strategy in local search.
-   - If the user's question is complex (e.g., "Compare methodology X and Y"), you MUST split it into multiple steps. First search for X, then search for Y, then synthesize.
-   - If local search yields no results, AUTOMATICALLY try 'search_arxiv_external'.
-3. **Citation:** Always cite your sources (e.g., [Title, Year]).
-
+1. **Scope Restriction:** You ONLY answer questions related to academic research, literature review, technical concepts, or document analysis. If a user asks about daily life, entertainment, or sensitive topics unrelated to research, politely refuse. You can answer and discuss with memories, but careful on using you internal knowledge.
+2. **Search Strategy & Knowledge Usage (CRITICAL):**
+   - For specific methodologies, academic comparisons, or recent papers, you MUST use 'search_knowledge_base' or 'search_arxiv_external'.
+   - For factual definitions, general computer science concepts, and historical context (e.g., "History of Language Models"), you MAY use your internal knowledge, OR use 'search_web_general' to gather broad overviews.
+   - Do NOT use 'search_arxiv_external' for broad historical overviews, as it only returns niche academic papers.
+3. **Citation:** Always cite your sources (e.g., [Title, Year]). If using internal knowledge, just explain clearly.
 """
 
 DB_URI = os.getenv("POSTGRES_URI", "postgresql://admin:secretpassword@localhost:5432/agent_memory")
+
+async def run_research_agent_stream(user_input: str, user_id: str, thread_id: str = "1"):
+    """
+    串流版本的 Agent 執行函數。
+    每當 Agent 執行一個動作，就立刻 yield 出狀態字串。
+    """
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "user_id": user_id
+        }
+    }
+    inputs = {
+        "messages": [("user", f"User ID: {user_id}\nRequest: {user_input}")]
+    }
+
+    async with AsyncPostgresSaver.from_conn_string(DB_URI) as checkpointer:
+        await checkpointer.setup()
+        
+        agent_executor = create_react_agent(
+            llm, 
+            tools, 
+            checkpointer=checkpointer,
+            prompt=SYSTEM_PROMPT
+        )
+
+        # astream 會在每個 Node 執行完畢時觸發
+        async for event in agent_executor.astream(inputs, config=config):
+            if "agent" in event:
+                message = event["agent"]["messages"][-1]
+                if message.tool_calls:
+                    # Agent 決定呼叫工具
+                    for tc in message.tool_calls:
+                        yield json.dumps({
+                            "type": "status", 
+                            "content": f"🛠️ Agent is using tool: `{tc['name']}`..."
+                        }) + "\n"
+                else:
+                    # Agent 給出最終回答
+                    yield json.dumps({
+                        "type": "answer", 
+                        "content": message.content
+                    }) + "\n"
+
+            elif "tools" in event:
+                # 工具執行完畢
+                for message in event["tools"]["messages"]:
+                    yield json.dumps({
+                        "type": "status", 
+                        "content": f"✅ Tool `{message.name}` completed, now reading..."
+                    }) + "\n"
 
 async def run_research_agent(user_input: str, user_id: str, thread_id: str = "1"):
     config = {
