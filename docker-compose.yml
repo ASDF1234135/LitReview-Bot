@@ -1,7 +1,7 @@
-# docker-compose.yml
 version: '3.8'
 
 services:
+  # 1. Postgres 資料庫
   postgres:
     image: postgres:15-alpine
     container_name: agent_postgres
@@ -15,6 +15,7 @@ services:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
 
+  # 2. Qdrant 向量資料庫
   qdrant:
     image: qdrant/qdrant:latest
     container_name: agent_qdrant
@@ -22,6 +23,38 @@ services:
       - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  # 3. FastAPI 後端服務
+  backend:
+    build: .
+    container_name: agent_backend
+    # 啟動 FastAPI，並開啟 4 個 Worker
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+    ports:
+      - "8000:8000"
+    environment:
+      # [關鍵] 把 localhost 換成 postgres 和 qdrant
+      - POSTGRES_URI=postgresql://admin:secretpassword@postgres:5432/agent_memory
+      - QDRANT_URL=http://qdrant:6333 
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - INNGEST_BASE_URL=http://host.docker.internal:8288
+    depends_on:
+      - postgres
+      - qdrant
+    restart: unless-stopped
+
+  # 4. Streamlit 前端服務
+  frontend:
+    build: .
+    container_name: agent_frontend
+    command: streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE_URL=http://backend:8000
+    depends_on:
+      - backend
     restart: unless-stopped
 
 volumes:

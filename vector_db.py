@@ -7,32 +7,42 @@ import uuid
 import os
 
 class QdrantStorage:
-    def __init__(self, url="http://localhost:6333", collection='research_papers', dim=3072):
-        self.client = QdrantClient(url, timeout=30)
+    def __init__(self, collection='research_papers', dim=3072):
+        db_url = os.getenv("QDRANT_URL", "http://localhost:6333")
         self.collection = collection
         
-        # [NEW] 初始化 Sparse Embedding Model (本地執行，速度很快)
-        # 使用 Qdrant 官方推薦的 BM25 模型
         self.sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
         
-        # 初始化 Reranker
-        self.ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir="./opt")
-
-        # 檢查並建立 Collection (支援 Dense + Sparse)
-        if not self.client.collection_exists(self.collection):
-            self.client.create_collection(
-                collection_name=self.collection,
-                # Dense Config
-                vectors_config={
-                    "dense": VectorParams(size=dim, distance=Distance.COSINE)
-                },
-                # [NEW] Sparse Config
-                sparse_vectors_config={
-                    "sparse": SparseVectorParams(index=models.SparseIndexParams(
-                        on_disk=False,
-                    ))
-                }
-            )
+        # 2. 加入重試機制 (Retry Mechanism)，容忍 Qdrant 開機延遲
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                print(f"--- [DB] Connecting to Qdrant at {db_url} (Attempt {attempt+1}/{max_retries}) ---")
+                self.client = QdrantClient(url=db_url, timeout=30)
+                
+                # 測試連線並檢查 Collection
+                if not self.client.collection_exists(self.collection):
+                    self.client.create_collection(
+                        collection_name=self.collection,
+                        vectors_config={
+                            "dense": VectorParams(size=dim, distance=Distance.COSINE)
+                        },
+                        sparse_vectors_config={
+                            "sparse": SparseVectorParams(index=models.SparseIndexParams(
+                                on_disk=False,
+                            ))
+                        }
+                    )
+                print("--- [DB] Qdrant connection successful! ---")
+                break # 成功就跳出迴圈
+                
+            except Exception as e:
+                print(f"--- [DB] Failed to connect to Qdrant: {e} ---")
+                if attempt < max_retries - 1:
+                    print("--- [DB] Waiting 3 seconds before retrying... ---")
+                    time.sleep(3)
+                else:
+                    raise Exception("Critical: Could not connect to Qdrant after multiple attempts.")
 
     def upsert(self, texts: list, metadatas: list, vectors: list, user_id: str, access: str):
         # [NEW] 計算 Sparse Vectors
