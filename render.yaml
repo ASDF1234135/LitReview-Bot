@@ -48,4 +48,4 @@ services:
 # 4. 部署 PostgreSQL (使用 Render 原生代管資料庫)
 databases:
   - name: agent-postgres
-    plan: starter
+    plan: free
