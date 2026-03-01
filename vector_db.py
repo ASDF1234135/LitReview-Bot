@@ -12,6 +12,8 @@ class QdrantStorage:
         self.collection = collection
         
         self.sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+
+        self.ranker = Ranker()
         
         # 2. 加入重試機制 (Retry Mechanism)，容忍 Qdrant 開機延遲
         max_retries = 5
