@@ -30,6 +30,14 @@ class ChatMessage(Base):
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class ChatThread(Base):
+    __tablename__ = "chat_threads"
+
+    thread_id = Column(String(100), primary_key=True, index=True)
+    username = Column(String(50), index=True, nullable=False)
+    title = Column(String(255), nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 Base.metadata.create_all(bind=engine)
 
 def get_db():

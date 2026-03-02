@@ -5,10 +5,7 @@ import os
 import json
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-SESSIONS_FILE = "user_sessions.json"
-
 st.set_page_config(page_title="AI Research Agent", page_icon="🤖", layout="wide")
-
 
 if "authentication_status" not in st.session_state:
     st.session_state["authentication_status"] = False
@@ -83,34 +80,35 @@ elif st.session_state["authentication_status"]:
         if isinstance(content, dict): return content.get("answer", str(content))
         return str(content)
 
-    def load_threads(user_id):
-        if os.path.exists(SESSIONS_FILE):
-            with open(SESSIONS_FILE, "r") as f:
-                data = json.load(f)
-                user_data = data.get(user_id, {})
-                if isinstance(user_data, list):
-                    return {tid: "New Chat" for tid in user_data}
-                return user_data
+    def load_threads_api(username):
+        try:
+            res = requests.get(f"{API_BASE_URL}/api/threads/{username}")
+            if res.status_code == 200:
+                data = res.json()
+                return data if data else {}
+        except:
+            pass
         return {}
 
-    def save_threads(user_id, threads_dict):
-        data = {}
-        if os.path.exists(SESSIONS_FILE):
-            with open(SESSIONS_FILE, "r") as f:
-                data = json.load(f)
-        data[user_id] = threads_dict
-        with open(SESSIONS_FILE, "w") as f:
-            json.dump(data, f)
+    def save_thread_api(username, thread_id, title):
+        requests.post(f"{API_BASE_URL}/api/threads", json={
+            "username": username,
+            "thread_id": thread_id,
+            "title": title
+        })
+        
+    def delete_thread_api(thread_id):
+        requests.delete(f"{API_BASE_URL}/api/threads/{thread_id}")
 
     # ==========================================
     # 2. 狀態初始化 (修復缺失的 messages 陣列)
     # ==========================================
     if "threads" not in st.session_state:
-        user_threads = load_threads(USER_ID)
+        user_threads = load_threads_api(USER_ID)
         if not user_threads:
             new_tid = f"Session_{uuid.uuid4().hex[:5]}"
             user_threads = {new_tid: "New Chat"}
-            save_threads(USER_ID, user_threads)
+            save_thread_api(USER_ID, new_tid, "New Chat")
         st.session_state.threads = user_threads
 
     if "current_thread_id" not in st.session_state:
@@ -195,7 +193,7 @@ elif st.session_state["authentication_status"]:
         if st.button("➕ New Chat", use_container_width=True, type="primary"):
             new_tid = f"Session_{uuid.uuid4().hex[:5]}"
             st.session_state.threads[new_tid] = "New Chat"
-            save_threads(USER_ID, st.session_state.threads)
+            save_thread_api(USER_ID, new_tid, "New Chat")
             st.session_state.current_thread_id = new_tid
             st.rerun()
 
@@ -219,13 +217,13 @@ elif st.session_state["authentication_status"]:
                     
                     if st.button("💾 Save", key=f"save_{tid}", use_container_width=True):
                         st.session_state.threads[tid] = new_title
-                        save_threads(USER_ID, st.session_state.threads)
+                        save_thread_api(USER_ID, tid, new_title)
                         st.rerun()
                         
                     if st.button("🗑️ Delete", key=f"del_chat_{tid}", type="primary", use_container_width=True):
                         if len(st.session_state.threads) > 1:
                             del st.session_state.threads[tid]
-                            save_threads(USER_ID, st.session_state.threads)
+                            delete_thread_api(tid)
                             if st.session_state.current_thread_id == tid:
                                 st.session_state.current_thread_id = list(st.session_state.threads.keys())[-1]
                             st.rerun()

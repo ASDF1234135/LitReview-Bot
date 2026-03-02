@@ -23,7 +23,7 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
 import bcrypt
 from pydantic import BaseModel
-from database import get_db, User
+from database import get_db, User, ChatThread
 
 load_dotenv()
 
@@ -52,6 +52,32 @@ class IngestRequest(BaseModel):
     file_path: str
     user_id: str
 
+class ThreadCreate(BaseModel):
+    username: str
+    thread_id: str
+    title: str
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+class UserCreate(BaseModel):
+    username: str
+    email: str
+    password: str
+
+# -- Helpers --
+def get_password_hash(password: str) -> str:
+    pwd_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed_password = bcrypt.hashpw(pwd_bytes, salt)
+    return hashed_password.decode('utf-8')
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    password_bytes = plain_password.encode('utf-8')
+    hashed_password_bytes = hashed_password.encode('utf-8')
+    return bcrypt.checkpw(password_bytes, hashed_password_bytes)
+
 # --- Inngest Functions (背景任務) ---
 
 @inngest_client.create_function(
@@ -59,11 +85,7 @@ class IngestRequest(BaseModel):
     trigger=inngest.TriggerEvent(event="rag/ingest_pdf"),
     concurrency=[inngest.Concurrency(limit=2)] # 限制同時處理的 PDF 數量，避免 OOM
 )
-# 【唯一修正這裡】：只留下一個 ctx: inngest.Context 參數
 async def rag_ingest_pdf(ctx: inngest.Context):
-    """
-    背景任務：當使用者上傳 PDF 時，自動進行語意切片並存入 Qdrant
-    """
     # 1. 從 ctx 提取 event data
     data = ctx.event.data
     pdf_path = Path(data["pdf_path"])
@@ -112,9 +134,6 @@ def read_root():
 
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
-    """
-    使用 StreamingResponse 將 Agent 的思考過程以 SSE 格式推播給前端
-    """
     try:
         # 將 Generator 丟給 StreamingResponse，並設定 media_type
         return StreamingResponse(
@@ -126,14 +145,12 @@ async def chat_endpoint(request: ChatRequest):
 
 @app.get("/api/history/{thread_id}")
 async def get_history_endpoint(thread_id: str):
-    """前端用來拉取歷史對話的 API"""
     try:
         history = await get_thread_history(thread_id)
         return {"history": history}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 讓 Streamlit 可以觸發 PDF 入庫的簡單接口
 @app.post("/api/trigger-ingest")
 async def trigger_ingest(request: IngestRequest):
     await inngest_client.send(
@@ -165,23 +182,6 @@ async def delete_file_endpoint(user_id: str, filename: str):
             raise HTTPException(status_code=500, detail="Failed to delete from DB")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
-def get_password_hash(password: str) -> str:
-    pwd_bytes = password.encode('utf-8')
-    salt = bcrypt.gensalt()
-    hashed_password = bcrypt.hashpw(pwd_bytes, salt)
-    # 存入資料庫前轉回字串
-    return hashed_password.decode('utf-8')
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    password_bytes = plain_password.encode('utf-8')
-    hashed_password_bytes = hashed_password.encode('utf-8')
-    return bcrypt.checkpw(password_bytes, hashed_password_bytes)
-
-class UserCreate(BaseModel):
-    username: str
-    email: str
-    password: str
 
 @app.post("/api/register")
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
@@ -206,10 +206,6 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
     
     return {"message": "Register Successed", "username": new_user.username}
 
-class UserLogin(BaseModel):
-    username: str
-    password: str
-
 @app.post("/api/login")
 def login_user(user: UserLogin, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.username == user.username).first()
@@ -222,7 +218,30 @@ def login_user(user: UserLogin, db: Session = Depends(get_db)):
         
     return {"message": "Login Successed", "username": db_user.username}
 
-# 註冊 Inngest Handler
+@app.get("/api/threads/{username}")
+def get_threads(username: str, db: Session = Depends(get_db)):
+    threads = db.query(ChatThread).filter(ChatThread.username == username).order_by(ChatThread.updated_at.asc()).all()
+    return {t.thread_id: t.title for t in threads}
+
+@app.post("/api/threads")
+def save_thread(thread: ThreadCreate, db: Session = Depends(get_db)):
+    db_thread = db.query(ChatThread).filter(ChatThread.thread_id == thread.thread_id).first()
+    if db_thread:
+        db_thread.title = thread.title 
+    else:
+        new_thread = ChatThread(username=thread.username, thread_id=thread.thread_id, title=thread.title)
+        db.add(new_thread) 
+    db.commit()
+    return {"message": "Thread saved successfully"}
+
+@app.delete("/api/threads/{thread_id}")
+def delete_thread(thread_id: str, db: Session = Depends(get_db)):
+    db_thread = db.query(ChatThread).filter(ChatThread.thread_id == thread_id).first()
+    if db_thread:
+        db.delete(db_thread)
+        db.commit()
+    return {"message": "Thread deleted successfully"}
+
 inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf])
 
 if __name__ == "__main__":
