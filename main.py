@@ -1,8 +1,6 @@
-# main.py 的最頂部
 import sys
 import asyncio
 
-# --- 解決 Windows Asyncio 與 Psycopg3 的衝突 ---
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -17,16 +15,18 @@ from dotenv import load_dotenv
 from agent_core import get_thread_history
 from fastapi.responses import StreamingResponse
 from agent_core import run_research_agent_stream, get_thread_history
-
-# 1. 載入環境變數 (必須在最上面)
-load_dotenv()
-
-# 引入我們的新模組
+from fastapi.middleware.cors import CORSMiddleware
 from agent_core import run_research_agent
 from vector_db import QdrantStorage
 from data_loader import load_and_chunk_pdf, get_embeddings
+from fastapi import Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from passlib.context import CryptContext
+from pydantic import BaseModel
+from database import get_db, User
 
-# --- 配置 ---
+load_dotenv()
+
 IS_CLOUD = os.getenv("RENDER") is not None
 inngest_client = inngest.Inngest(app_id="rag_agent_app", is_production=IS_CLOUD)
 
@@ -34,8 +34,6 @@ app = FastAPI(title="AI Research Agent API")
 db = QdrantStorage()
 
 
-# 允許跨域 (配合 Streamlit 開發)
-from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -157,7 +155,6 @@ async def get_files_endpoint(user_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# [NEW] 刪除檔案 API
 @app.delete("/api/files/{user_id}/{filename}")
 async def delete_file_endpoint(user_id: str, filename: str):
     try:
@@ -168,6 +165,55 @@ async def delete_file_endpoint(user_id: str, filename: str):
             raise HTTPException(status_code=500, detail="Failed to delete from DB")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def get_password_hash(password):
+    return pwd_context.hash(password)
+class UserCreate(BaseModel):
+    username: str
+    email: str
+    password: str
+
+@app.post("/api/register")
+def register_user(user: UserCreate, db: Session = Depends(get_db)):
+    # 檢查帳號或 Email 是否已被註冊
+    db_user = db.query(User).filter(
+        (User.username == user.username) | (User.email == user.email)
+    ).first()
+    
+    if db_user:
+        raise HTTPException(
+            status_code=400, 
+            detail="The account or email has been registered."
+        )
+
+    # 建立新使用者，並將密碼加密後存入
+    new_user = User(
+        username=user.username,
+        email=user.email,
+        hashed_password=get_password_hash(user.password)
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    return {"message": "Register Successed", "username": new_user.username}
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+@app.post("/api/login")
+def login_user(user: UserLogin, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.username == user.username).first()
+    
+    if not db_user or not pwd_context.verify(user.password, db_user.hashed_password):
+        raise HTTPException(
+            status_code=401, 
+            detail="Error on Username or Password!"
+        )
+        
+    return {"message": "Login Successed", "username": db_user.username}
 
 # 註冊 Inngest Handler
 inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf])

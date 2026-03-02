@@ -3,70 +3,78 @@ import requests
 import uuid
 import os
 import json
-import yaml                                      
-from yaml.loader import SafeLoader               
-import streamlit_authenticator as stauth
 
-# --- 設定 ---
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-USER_ID = "User_William" 
 SESSIONS_FILE = "user_sessions.json"
 
 st.set_page_config(page_title="AI Research Agent", page_icon="🤖", layout="wide")
 
-# ==========================================
-# 0. 登入與身分驗證系統 (Authentication)
-# ==========================================
-# 讀取認證設定檔
-with open('auth_config.yaml', 'r', encoding='utf-8') as file:
-    config = yaml.load(file, Loader=SafeLoader)
 
-# 實例化驗證器
-authenticator = stauth.Authenticate(
-    config['credentials'],
-    config['cookie']['name'],
-    config['cookie']['key'],
-    config['cookie']['expiry_days']
-)
+if "authentication_status" not in st.session_state:
+    st.session_state["authentication_status"] = False
+if "username" not in st.session_state:
+    st.session_state["username"] = None
 
-# 在畫面上渲染登入小工具
-authenticator.login()
-
-# 👉 判斷登入狀態
-if st.session_state["authentication_status"] is False:
-    st.error('❌ Username/password is incorrect')
+if not st.session_state["authentication_status"]:
+    st.title("🤖 AI Research Agent")
+    st.write("Please login for the service")
     
-elif st.session_state["authentication_status"] is None:
-    st.warning('⚠️ Please enter your username and password')
+    # 使用 Tabs 切換登入與註冊
+    tab_login, tab_register = st.tabs(["Login", "Register"])
     
-    # [附加功能] 提供註冊表單，讓新使用者可以自己辦帳號
-    with st.expander("New here? Register an account"):
-        try:
-            # register_user 會自動幫我們 Hash 密碼並更新 config 字典
-            email_of_registered_user, username_of_registered_user, name_of_registered_user = authenticator.register_user()
-            if email_of_registered_user:
-                st.success('✅ User registered successfully! You can now login.')
-                # 將新帳號寫回 auth_config.yaml 永久保存
-                with open('auth_config.yaml', 'w', encoding='utf-8') as file:
-                    yaml.dump(config, file, default_flow_style=False)
-        except Exception as e:
-            st.error(e)
-
+    with tab_login:
+        with st.form("login_form"):
+            login_user = st.text_input("Username")
+            login_pass = st.text_input("Password", type="password")
+            submitted_login = st.form_submit_button("Login", use_container_width=True)
+            
+            if submitted_login:
+                if not login_user or not login_pass:
+                    st.warning("Please fill the username and password")
+                else:
+                    res = requests.post(f"{API_BASE_URL}/api/login", json={
+                        "username": login_user,
+                        "password": login_pass
+                    })
+                    if res.status_code == 200:
+                        st.session_state["authentication_status"] = True
+                        st.session_state["username"] = res.json()["username"]
+                        st.success("Login successful, loading...")
+                        st.rerun()
+                    else:
+                        st.error(f"login failed: {res.json().get('detail', 'unknown error')}")
+                        
+    with tab_register:
+        with st.form("register_form"):
+            reg_user = st.text_input("Username")
+            reg_email = st.text_input("Email")
+            reg_pass = st.text_input("Password", type="password")
+            submitted_reg = st.form_submit_button("Register", use_container_width=True)
+            
+            if submitted_reg:
+                if not reg_user or not reg_email or not reg_pass:
+                    st.warning("Please fill all the columns")
+                else:
+                    res = requests.post(f"{API_BASE_URL}/api/register", json={
+                        "username": reg_user,
+                        "email": reg_email,
+                        "password": reg_pass
+                    })
+                    if res.status_code == 200:
+                        st.success("Register successful! Please login")
+                    else:
+                        st.error(f"Register failed: {res.json().get('detail', 'unknown error')}")
 elif st.session_state["authentication_status"]:
-    # ==========================================
-    # 🎉 登入成功！進入主應用程式
-    # ==========================================
-    
-    # 1. 動態取得 USER_ID (不再是寫死的 "User_William" 囉！)
     USER_ID = st.session_state["username"]
     
-    # 2. 在側邊欄加上登出按鈕與歡迎詞
     with st.sidebar:
-        st.write(f'👋 Welcome, **{st.session_state["name"]}**')
-        authenticator.logout('Logout', 'main')
+        st.write(f'Welcome, **{USER_ID}**')
+        if st.button("Logout", use_container_width=True):
+            st.session_state["authentication_status"] = False
+            st.session_state["username"] = None
+            st.rerun()
         st.divider()
 
-    st.set_page_config(page_title="AI Research Agent", page_icon="🤖", layout="wide")
 
     def extract_text(content):
         if isinstance(content, str): return content
@@ -75,9 +83,6 @@ elif st.session_state["authentication_status"]:
         if isinstance(content, dict): return content.get("answer", str(content))
         return str(content)
 
-    # ==========================================
-    # 1. Session 讀寫 Helper
-    # ==========================================
     def load_threads(user_id):
         if os.path.exists(SESSIONS_FILE):
             with open(SESSIONS_FILE, "r") as f:
@@ -118,7 +123,6 @@ elif st.session_state["authentication_status"]:
     if "last_loaded_thread" not in st.session_state:
         st.session_state.last_loaded_thread = None
 
-    # 👉 [補回] 向後端拉取歷史記憶的邏輯
     def fetch_history(thread_id):
         try:
             res = requests.get(f"{API_BASE_URL}/api/history/{thread_id}")
@@ -133,9 +137,6 @@ elif st.session_state["authentication_status"]:
             st.session_state.messages = fetch_history(st.session_state.current_thread_id)
             st.session_state.last_loaded_thread = st.session_state.current_thread_id
 
-    # ==========================================
-    # 3. 檔案管理 Modal (彈出式視窗)
-    # ==========================================
     @st.dialog("📂 Knowledge Base Management", width="large")
     def file_management_dialog():
         st.caption(f"Current User: {USER_ID}")
