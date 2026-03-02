@@ -21,7 +21,7 @@ from vector_db import QdrantStorage
 from data_loader import load_and_chunk_pdf, get_embeddings
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from passlib.context import CryptContext
+import bcrypt
 from pydantic import BaseModel
 from database import get_db, User
 
@@ -166,9 +166,18 @@ async def delete_file_endpoint(user_id: str, filename: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-def get_password_hash(password):
-    return pwd_context.hash(password)
+def get_password_hash(password: str) -> str:
+    pwd_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed_password = bcrypt.hashpw(pwd_bytes, salt)
+    # 存入資料庫前轉回字串
+    return hashed_password.decode('utf-8')
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    password_bytes = plain_password.encode('utf-8')
+    hashed_password_bytes = hashed_password.encode('utf-8')
+    return bcrypt.checkpw(password_bytes, hashed_password_bytes)
+
 class UserCreate(BaseModel):
     username: str
     email: str
@@ -176,7 +185,6 @@ class UserCreate(BaseModel):
 
 @app.post("/api/register")
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
-    # 檢查帳號或 Email 是否已被註冊
     db_user = db.query(User).filter(
         (User.username == user.username) | (User.email == user.email)
     ).first()
@@ -187,7 +195,6 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
             detail="The account or email has been registered."
         )
 
-    # 建立新使用者，並將密碼加密後存入
     new_user = User(
         username=user.username,
         email=user.email,
@@ -207,7 +214,7 @@ class UserLogin(BaseModel):
 def login_user(user: UserLogin, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.username == user.username).first()
     
-    if not db_user or not pwd_context.verify(user.password, db_user.hashed_password):
+    if not db_user or not verify_password(user.password, db_user.hashed_password):
         raise HTTPException(
             status_code=401, 
             detail="Error on Username or Password!"
