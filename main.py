@@ -92,24 +92,25 @@ async def rag_ingest_pdf(ctx: inngest.Context):
     pdf_path = Path(data["pdf_path"])
     user_id = data["user_id"]
 
-    # 2. 從 ctx 提取 step 來執行任務 (加上 ctx. 前綴)
-    chunks = await ctx.step.run("parse_and_chunk", lambda: load_and_chunk_pdf(
-        file_path=pdf_path, 
-        chunk_strategy="semantic"
-    ))
+    # 2. 定義一個內部非同步函數，把所有耗費記憶體的「重資料」操作包在一起
+    async def process_entire_pipeline():
+        # Step 2a: 本地切片
+        chunks = load_and_chunk_pdf(
+            file_path=pdf_path, 
+            chunk_strategy="semantic"
+        )
 
-    if not chunks:
-        return {"status": "error", "message": "No text extracted from PDF"}
+        if not chunks:
+            return {"status": "error", "message": "No text extracted from PDF"}
 
-    # Step 2: 準備向量與 Metadata
-    texts = [c["text"] for c in chunks]
-    metadatas = [c["metadata"] for c in chunks]
+        texts = [c["text"] for c in chunks]
+        metadatas = [c["metadata"] for c in chunks]
 
-    # Step 3: 計算向量 (Batch Embedding)
-    vectors = await ctx.step.run("generate_embeddings", lambda: get_embeddings(texts))
+        # Step 2b: 本地計算向量 
+        # (注意：如果您的 get_embeddings 是 async，這裡請加 await；如果是 sync 則不用)
+        vectors = get_embeddings(texts) 
 
-    # Step 4: 存入 Qdrant (標記為 Private)
-    def save_to_db():
+        # Step 2c: 本地存入 Qdrant
         db.upsert(
             texts=texts,
             metadatas=metadatas,
@@ -117,15 +118,18 @@ async def rag_ingest_pdf(ctx: inngest.Context):
             user_id=user_id,
             access="private"
         )
-        return "Success"
+        
+        # ⭐️ 最關鍵的一步：不要回傳 chunks 或 vectors！只回傳輕量的字串和數字！
+        return {
+            "status": "completed",
+            "chunks_processed": len(chunks),
+            "source": pdf_path.name
+        }
 
-    result = await ctx.step.run("upsert_to_qdrant", save_to_db)
+    # 3. 讓 Inngest 把「整條 Pipeline」當作一個單一的 Step 來執行
+    result = await ctx.step.run("process_and_store_pdf", process_entire_pipeline)
 
-    return {
-        "status": "completed",
-        "chunks_processed": len(chunks),
-        "source": pdf_path.name
-    }
+    return result
 
 # --- API Endpoints ---
 
