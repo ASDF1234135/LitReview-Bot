@@ -14,7 +14,7 @@ class RAGAgentUser(FastHttpUser):
         current_thread_id = f"TestSession_{uuid.uuid4().hex[:8]}"
         
         payload = {
-            "message": "What is Active Learning? Explain based on the provided local documents.",
+            "message": "Give me the detail review of mirror therapy",
             "user_id": self.user_id,
             "thread_id": current_thread_id
         }

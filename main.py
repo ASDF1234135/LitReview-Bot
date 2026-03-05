@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 import bcrypt
 from pydantic import BaseModel
 from database import get_db, User, ChatThread
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form
 
 load_dotenv()
 
@@ -152,13 +153,24 @@ async def get_history_endpoint(thread_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/trigger-ingest")
-async def trigger_ingest(request: IngestRequest):
+async def trigger_ingest(
+    file: UploadFile = File(...), 
+    user_id: str = Form(...)
+):
+    
+    temp_dir = "backend_uploads"
+    os.makedirs(temp_dir, exist_ok=True)
+    file_path = os.path.join(temp_dir, file.filename)
+    
+    with open(file_path, "wb") as buffer:
+        buffer.write(await file.read())
+
     await inngest_client.send(
         inngest.Event(
             name="rag/ingest_pdf",
             data={
-                "pdf_path": request.file_path,
-                "user_id": request.user_id
+                "pdf_path": file_path,
+                "user_id": user_id
             }
         )
     )

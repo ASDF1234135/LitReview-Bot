@@ -141,17 +141,18 @@ elif st.session_state["authentication_status"]:
         
         uploaded_file = st.file_uploader("Upload PDF Paper", type=["pdf"])
         if uploaded_file:
-            temp_dir = "temp_uploads"
-            os.makedirs(temp_dir, exist_ok=True)
-            file_path = os.path.join(temp_dir, uploaded_file.name)
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
             if st.button("🚀 Process & Ingest", use_container_width=True):
                 with st.spinner("Dispatching to background worker..."):
                     try:
-                        payload = {"file_path": file_path, "user_id": USER_ID}
-                        res = requests.post(f"{API_BASE_URL}/api/trigger-ingest", json=payload)
+                        files = {
+                            "file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")
+                        }
+                        data = {
+                            "user_id": USER_ID
+                        }
+                        
+                        res = requests.post(f"{API_BASE_URL}/api/trigger-ingest", files=files, data=data)
+                        
                         if res.status_code == 200:
                             st.success("✅ Ingestion started! Click Refresh in a few seconds.")
                         else:
