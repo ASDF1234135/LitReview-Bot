@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # 1. Postgres 資料庫
   postgres:
     image: postgres:15-alpine
     container_name: agent_postgres
@@ -15,7 +14,6 @@ services:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
 
-  # 2. Qdrant 向量資料庫
   qdrant:
     image: qdrant/qdrant:latest
     container_name: agent_qdrant
@@ -25,12 +23,10 @@ services:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
 
-  # 3. FastAPI 後端服務
   backend:
     build: .
     container_name: agent_backend
-    # 啟動 FastAPI，並開啟 4 個 Worker
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4
     ports:
       - "8000:8000"
     environment:
@@ -44,11 +40,10 @@ services:
       - qdrant
     restart: unless-stopped
 
-  # 4. Streamlit 前端服務
   frontend:
     build: .
     container_name: agent_frontend
-    command: streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    command: streamlit run frontend/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
     ports:
       - "8501:8501"
     environment:

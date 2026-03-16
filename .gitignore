@@ -5,6 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
+.python-version
 
 # Virtual environments
 .venv
@@ -12,3 +13,4 @@ wheels/
 /uploads
 /qdrant_storage
 *.db
+*/qdrant_storage
