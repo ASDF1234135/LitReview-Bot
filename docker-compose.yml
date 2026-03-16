@@ -34,8 +34,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # [關鍵] 把 localhost 換成 postgres 和 qdrant
       - POSTGRES_URI=postgresql://admin:secretpassword@postgres:5432/agent_memory
+      - DATABASE_URL=postgresql://admin:secretpassword@postgres:5432/agent_memory
       - QDRANT_URL=http://qdrant:6333 
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - INNGEST_BASE_URL=http://host.docker.internal:8288

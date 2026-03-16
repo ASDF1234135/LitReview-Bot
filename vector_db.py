@@ -1,42 +1,42 @@
 from qdrant_client import QdrantClient, models
 from qdrant_client.models import VectorParams, SparseVectorParams, Distance, PointStruct
 from flashrank import Ranker, RerankRequest
-# [NEW] 引入 FastEmbed 用來算 BM25
 from fastembed import SparseTextEmbedding
 import uuid
 import os
+import time
 
 class QdrantStorage:
-    def __init__(self, collection='research_papers', dim=3072):
+    def __init__(self, collection='research_papers', dim=3072, recreate_collection=False):
         db_url = os.getenv("QDRANT_URL", "http://localhost:6333")
         self.collection = collection
-        
         self.sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
-
         self.ranker = Ranker()
         
-        # 2. 加入重試機制 (Retry Mechanism)，容忍 Qdrant 開機延遲
         max_retries = 5
         for attempt in range(max_retries):
             try:
                 print(f"--- [DB] Connecting to Qdrant at {db_url} (Attempt {attempt+1}/{max_retries}) ---")
                 self.client = QdrantClient(url=db_url, timeout=30)
                 
-                # 測試連線並檢查 Collection
+                if recreate_collection and self.client.collection_exists(self.collection):
+                    print(f"--- [DB] Recreating collection '{self.collection}' for Hybrid Search ---")
+                    self.client.delete_collection(self.collection)
+
                 if not self.client.collection_exists(self.collection):
                     self.client.create_collection(
                         collection_name=self.collection,
                         vectors_config={
-                            "dense": VectorParams(size=dim, distance=Distance.COSINE)
+                            "dense": models.VectorParams(size=dim, distance=models.Distance.COSINE)
                         },
                         sparse_vectors_config={
-                            "sparse": SparseVectorParams(index=models.SparseIndexParams(
-                                on_disk=False,
-                            ))
+                            "sparse": models.SparseVectorParams(
+                                index=models.SparseIndexParams(on_disk=False)
+                            )
                         }
                     )
                 print("--- [DB] Qdrant connection successful! ---")
-                break # 成功就跳出迴圈
+                break 
                 
             except Exception as e:
                 print(f"--- [DB] Failed to connect to Qdrant: {e} ---")
@@ -45,7 +45,7 @@ class QdrantStorage:
                     time.sleep(3)
                 else:
                     raise Exception("Critical: Could not connect to Qdrant after multiple attempts.")
-
+                
     def upsert(self, texts: list, metadatas: list, vectors: list, user_id: str, access: str):
         # [NEW] 計算 Sparse Vectors
         print("--- [DB] Computing Sparse Vectors (BM25) ---")
@@ -116,7 +116,7 @@ class QdrantStorage:
                 ],
                 # C. Fusion: 使用 RRF 合併排名
                 query=models.FusionQuery(
-                    method=models.Fusion.RRF
+                    fusion=models.Fusion.RRF
                 ),
                 limit=limit,
                 with_payload=True
@@ -180,34 +180,27 @@ class QdrantStorage:
             print(f"--- [DB Error] Failed to get files: {e} ---")
             return []
 
-    # [NEW] 刪除使用者的特定檔案
     def delete_user_file(self, user_id: str, filename: str) -> bool:
         try:
-            # 1. 先找出該使用者所有的 Chunk
-            records, _ = self.client.scroll(
+            print(f"--- [DB] Requesting Qdrant to delete chunks for file: {filename} ---")
+            
+            self.client.delete(
                 collection_name=self.collection,
-                scroll_filter=models.Filter(
-                    must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id))]
-                ),
-                limit=10000,
-                with_payload=True,
-                with_vectors=False
-            )
-            
-            # 2. 篩選出檔名相符的 Point IDs
-            ids_to_delete = []
-            for r in records:
-                source = r.payload.get("source", "")
-                if os.path.basename(source) == filename:
-                    ids_to_delete.append(r.id)
-            
-            # 3. 執行批次刪除
-            if ids_to_delete:
-                print(f"--- [DB] Deleting {len(ids_to_delete)} chunks for file: {filename} ---")
-                self.client.delete(
-                    collection_name=self.collection,
-                    points_selector=models.PointIdsList(points=ids_to_delete)
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="user_id", 
+                                match=models.MatchValue(value=user_id)
+                            ),
+                            models.FieldCondition(
+                                key="source", 
+                                match=models.MatchText(text=filename)
+                            )
+                        ]
+                    )
                 )
+            )
             return True
         except Exception as e:
             print(f"--- [DB Error] Failed to delete file: {e} ---")

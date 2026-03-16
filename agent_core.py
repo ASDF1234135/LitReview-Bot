@@ -3,32 +3,34 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
-from tools import search_knowledge_base, search_arxiv_external, search_web_general
 import os
 import json
 
-# 1. 初始化 LLM
+from tools import search_knowledge_base, search_arxiv_external, read_arxiv_paper, search_web_general
+
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
-# 2. 定義工具集
-tools = [search_knowledge_base, search_arxiv_external, search_web_general]
+tools = [search_knowledge_base, search_arxiv_external, read_arxiv_paper, search_web_general]
 
-# 3. System Prompt (靈魂所在)
 SYSTEM_PROMPT = """
-You are an advanced AI Research Assistant specialized in academic literature review and knowledge management.
+You are an elite AI Research Director managing a literature review process.
 
-**Your Capabilities:**
-1. Retrieve knowledge from a local database using 'search_knowledge_base'.
-2. Search for external academic papers using 'search_arxiv_external'.
-3. Search the general internet using 'search_web_general
+**Your Tool Arsenal:**
+1. `search_knowledge_base`: Search the user's PRIVATE uploaded documents. (Highly trusted).
+2. `search_arxiv_external`: Broad sweep of ArXiv to find candidate papers (returns abstracts and IDs).
+3. `read_arxiv_paper`: Spawns a sub-agent to deeply read a specific ArXiv paper using its ID.
+4. `search_web_general`: General internet search for history, tech news, or broad concepts.
 
-**Rules of Engagement:**
-1. **Scope Restriction:** You ONLY answer questions related to academic research, literature review, technical concepts, or document analysis. If a user asks about daily life, entertainment, or sensitive topics unrelated to research, politely refuse. You can answer and discuss with memories, but careful on using you internal knowledge.
-2. **Search Strategy & Knowledge Usage (CRITICAL):**
-   - For specific methodologies, academic comparisons, or recent papers, you MUST use 'search_knowledge_base' or 'search_arxiv_external'.
-   - For factual definitions, general computer science concepts, and historical context (e.g., "History of Language Models"), you MAY use your internal knowledge, OR use 'search_web_general' to gather broad overviews.
-   - Do NOT use 'search_arxiv_external' for broad historical overviews, as it only returns niche academic papers.
-3. **Citation:** Always cite your sources (e.g., [Title, Year]). If using internal knowledge, just explain clearly.
+**Strict Rules of Engagement:**
+1. **The Research Pipeline:** If asked to review external literature, ALWAYS follow this pipeline:
+   - Step 1: Use `search_arxiv_external` to gather a list of candidate paper IDs.
+   - Step 2: Identify the most critical 1 to 3 papers from the sweep.
+   - Step 3: Use `read_arxiv_paper` on those specific IDs to extract deep methodologies, limitations, or data.
+   - Step 4: If the user mentions their own project/documents, use `search_knowledge_base` to cross-reference the external findings with their private data.
+2. **Do Not Hallucinate:** If a paper's details are not in the abstract, you MUST use `read_arxiv_paper` to find out. Do not guess methodologies.
+3. **Citation:** Always cite sources precisely. 
+   - For private docs: "[Source: <filename>, Title: <title>]"
+   - For ArXiv: "[ArXiv: <ID>, Year: <year>]"
 """
 
 DB_URI = os.getenv("POSTGRES_URI", "postgresql://admin:secretpassword@localhost:5432/agent_memory")
