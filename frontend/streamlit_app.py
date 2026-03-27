@@ -139,22 +139,21 @@ elif st.session_state["authentication_status"]:
     def file_management_dialog():
         st.caption(f"Current User: {USER_ID}")
         
-        uploaded_file = st.file_uploader("Upload PDF Paper", type=["pdf"])
-        if uploaded_file:
-            if st.button("Process & Ingest", use_container_width=True):
-                with st.spinner("Dispatching to background worker..."):
+        uploaded_files = st.file_uploader("Upload PDF Papers", type=["pdf"], accept_multiple_files=True)
+        if uploaded_files:
+            if st.button(f"Process {len(uploaded_files)} Files", use_container_width=True):
+                with st.spinner(f"Dispatching {len(uploaded_files)} files to background workers..."):
                     try:
-                        files = {
-                            "file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")
-                        }
-                        data = {
-                            "user_id": USER_ID
-                        }
+                        files_payload = [
+                            ("files", (file.name, file.getvalue(), "application/pdf")) 
+                            for file in uploaded_files
+                        ]
+                        data = {"user_id": USER_ID}
                         
-                        res = requests.post(f"{API_BASE_URL}/api/trigger-ingest", files=files, data=data)
+                        res = requests.post(f"{API_BASE_URL}/api/trigger-ingest", files=files_payload, data=data)
                         
                         if res.status_code == 200:
-                            st.success("Ingestion started! Click Refresh in a few seconds.")
+                            st.success(f"Successfully queued {len(uploaded_files)} files! Click Refresh in a few seconds.")
                         else:
                             st.error(f"Error: {res.text}")
                     except Exception as e:

@@ -25,6 +25,7 @@ import bcrypt
 from pydantic import BaseModel
 from DB.database import get_db, User, ChatThread
 from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form
+from typing import List
 
 load_dotenv()
 
@@ -158,27 +159,32 @@ async def get_history_endpoint(thread_id: str):
 
 @app.post("/api/trigger-ingest")
 async def trigger_ingest(
-    file: UploadFile = File(...), 
+    files: List[UploadFile] = File(...), 
     user_id: str = Form(...)
 ):
     
-    temp_dir = "backend_uploads"
-    os.makedirs(temp_dir, exist_ok=True)
-    file_path = os.path.join(temp_dir, file.filename)
+    events_to_dispatch = []
+    os.makedirs("temp_uploads", exist_ok=True)
     
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-
-    await inngest_client.send(
-        inngest.Event(
-            name="rag/ingest_pdf",
-            data={
-                "pdf_path": file_path,
-                "user_id": user_id
-            }
+    for file in files:
+        temp_file_path = f"temp_uploads/{user_id}_{file.filename}"
+        with open(temp_file_path, "wb+") as f:
+            f.write(await file.read())
+            
+        events_to_dispatch.append(
+            inngest.Event(
+                name="rag/ingest_pdf", 
+                data={
+                    "user_id": user_id,
+                    "pdf_path": temp_file_path,
+                    "filename": file.filename
+                }
+            )
         )
-    )
-    return {"status": "Ingestion event dispatched"}
+        
+    await inngest_client.send(events_to_dispatch)
+    
+    return {"status": "success", "message": f"Successfully dispatched {len(files)} background jobs."}
 
 @app.get("/api/files/{user_id}")
 async def get_files_endpoint(user_id: str):
