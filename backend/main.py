@@ -30,6 +30,8 @@ import datetime
 import jwt
 from fastapi import Security
 from fastapi.security import OAuth2PasswordBearer
+import time
+import psutil
 
 load_dotenv()
 
@@ -150,9 +152,7 @@ async def rag_ingest_pdf(ctx: inngest.Context):
     pdf_path = Path(data["pdf_path"])
     user_id = data["user_id"]
 
-    # 2. 定義一個內部非同步函數，把所有耗費記憶體的「重資料」操作包在一起
     async def process_entire_pipeline():
-        # Step 2a: 本地切片
         chunks = load_and_chunk_pdf(
             file_path=pdf_path, 
             chunk_strategy="semantic"
@@ -164,11 +164,8 @@ async def rag_ingest_pdf(ctx: inngest.Context):
         texts = [c["text"] for c in chunks]
         metadatas = [c["metadata"] for c in chunks]
 
-        # Step 2b: 本地計算向量 
-        # (注意：如果您的 get_embeddings 是 async，這裡請加 await；如果是 sync 則不用)
         vectors = get_embeddings(texts) 
 
-        # Step 2c: 本地存入 Qdrant
         db.upsert(
             texts=texts,
             metadatas=metadatas,
@@ -177,14 +174,19 @@ async def rag_ingest_pdf(ctx: inngest.Context):
             access="private"
         )
         
-        # ⭐️ 最關鍵的一步：不要回傳 chunks 或 vectors！只回傳輕量的字串和數字！
+        try:
+            if pdf_path.exists():
+                os.remove(pdf_path)
+                print(f"--- [Cleanup] Successfully deleted temp file: {pdf_path.name} ---")
+        except Exception as e:
+            print(f"--- [Cleanup Error] Failed to delete {pdf_path}: {e} ---")
+
         return {
             "status": "completed",
             "chunks_processed": len(chunks),
             "source": pdf_path.name
         }
 
-    # 3. 讓 Inngest 把「整條 Pipeline」當作一個單一的 Step 來執行
     result = await ctx.step.run("process_and_store_pdf", process_entire_pipeline)
 
     return result
@@ -302,8 +304,77 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
     return {"message": "Register Successed", "username": new_user.username}
 
 @app.get("/api/admin/health", dependencies=[Depends(get_current_admin)])
-async def get_system_health():
-    return {"status": "Welcome to the Admin Dashboard!"}
+async def get_system_health(db_session: Session = Depends(get_db)):
+    start_time = time.time()
+    
+    cpu_usage = psutil.cpu_percent(interval=0.1)
+    ram = psutil.virtual_memory()
+    ram_usage = ram.percent
+    
+    ram_note = "Host Memory (Docker Context)" if IS_CLOUD else "Local Memory"
+
+    disk = psutil.disk_usage('/')
+    disk_usage = disk.percent
+    disk_total_gb = round(disk.total / (1024**3), 2)
+    disk_free_gb = round(disk.free / (1024**3), 2)
+
+    db_start = time.time()
+    try:
+        total_users = db_session.query(User).count()
+        total_threads = db_session.query(ChatThread).count()
+        db_status = "Online"
+    except Exception as e:
+        total_users, total_threads = 0, 0
+        db_status = f"Offline"
+        print(f"DB Error: {e}")
+    db_latency = int((time.time() - db_start) * 1000)
+    
+    qdrant_start = time.time()
+    try:
+        collection_info = db.client.get_collection(db.collection)
+        vector_count = collection_info.points_count
+        qdrant_status = "Online"
+    except Exception as e:
+        vector_count = 0
+        qdrant_status = "Offline"
+        print(f"Qdrant Error: {e}")
+    qdrant_latency = int((time.time() - qdrant_start) * 1000)
+    
+    api_latency = int((time.time() - start_time) * 1000)
+
+    current_env = "Production (Render)" if IS_CLOUD else "Local Development"
+    inngest_dashboard_url = "https://app.inngest.com/" if IS_CLOUD else "http://localhost:8288"
+
+    return {
+        "status": "healthy" if db_status == "Online" and qdrant_status == "Online" else "degraded",
+        "environment": current_env,
+        "api_latency_ms": api_latency,
+        "server": {
+            "cpu_percent": cpu_usage,
+            "ram_percent": ram_usage,
+            "ram_total_gb": round(ram.total / (1024**3), 2),
+            "ram_note": ram_note,
+            "disk_percent": disk_usage,
+            "disk_total_gb": disk_total_gb,
+            "disk_free_gb": disk_free_gb
+        },
+        "database": {
+            "status": db_status,
+            "latency_ms": db_latency,
+            "total_users": total_users,
+            "total_threads": total_threads
+        },
+        "qdrant": {
+            "status": qdrant_status,
+            "latency_ms": qdrant_latency,
+            "vector_count": vector_count
+        },
+        "services": {
+            "inngest_url": inngest_dashboard_url,
+            "langsmith_url": "https://smith.langchain.com/",
+            "render_url": "https://dashboard.render.com/"
+        }
+    }
 
 @app.post("/api/login")
 def login_user(user: UserLogin, db: Session = Depends(get_db)):

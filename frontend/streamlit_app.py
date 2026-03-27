@@ -290,7 +290,7 @@ elif st.session_state["authentication_status"]:
                                 elif data["type"] == "answer":
                                     final_answer = extract_text(data["content"])
                                     
-                        status_container.update(label="✅ Research Completed！", state="complete", expanded=False)
+                        status_container.update(label="Research Completed!", state="complete", expanded=False)
                         answer_placeholder.markdown(final_answer)
                         
                         st.session_state.messages.append({
@@ -299,40 +299,98 @@ elif st.session_state["authentication_status"]:
                         })
                         
                     else:
-                        status_container.update(label="❌ Error!", state="error")
+                        status_container.update(label="Error!", state="error")
                         st.error(f"Backend Error: {response.text}")
                         
                 except Exception as e:
-                    status_container.update(label="❌ Connection Failed", state="error")
+                    status_container.update(label="Connection Failed", state="error")
                     st.error(f"Failed to reach backend: {e}")
 
     elif current_view == "admin" and st.session_state.get("role") == "admin":
-        st.title("🎛️ System Triage Control Center")
-        if st.button("🔙 Back to Chat"):
+        st.title("System Triage Control Center")
+        
+        col_back, col_space = st.columns([1, 5])
+        if col_back.button("Back to Chat", use_container_width=True):
             st.session_state["view_mode"] = "chat"
             st.rerun()
             
         st.divider()
         
-        # 準備出示 JWT 通行證去敲後端的門
-        headers = {
-            "Authorization": f"Bearer {st.session_state.get('access_token')}"
-        }
-        
-        with st.spinner("Pinging microservices..."):
-            try:
-                # 呼叫受 JWT 保護的 API
-                res = requests.get(f"{API_BASE_URL}/api/admin/health", headers=headers)
-                
-                if res.status_code == 200:
-                    data = res.json()
-                    st.success("Authentication Passed!")
-                    # 暫時先用 JSON 印出來，確認有接通
-                    st.json(data)
-                elif res.status_code == 401 or res.status_code == 403:
-                    st.error("🚨 Unauthorized Access! Invalid token or insufficient permissions.")
-                else:
-                    st.error(f"Error: {res.status_code}")
+        @st.fragment(run_every=5)
+        def render_live_dashboard():
+            headers = {
+                "Authorization": f"Bearer {st.session_state.get('access_token')}"
+            }
+            
+            with st.spinner("Fetching live metrics..."):
+                try:
+                    res = requests.get(f"{API_BASE_URL}/api/admin/health", headers=headers)
                     
-            except Exception as e:
-                st.error("Backend offline or unreachable.")
+                    if res.status_code == 200:
+                        data = res.json()
+                        
+                        col_status, col_refresh = st.columns([4, 1])
+                        env_label = data.get("environment", "Unknown")
+                        
+                        with col_status:
+                            if data["status"] == "healthy":
+                                st.success(f"All systems operational. Running on **{env_label}** (Latency: {data['api_latency_ms']}ms)")
+                            else:
+                                st.warning(f"System degraded. Running on **{env_label}** (Latency: {data['api_latency_ms']}ms)")
+                        
+                        with col_refresh:
+                            st.button("Refresh Now", use_container_width=True)
+                        
+                        st.write("")
+                        
+                        st.subheader("Server Node (FastAPI)")
+                        s1, s2, s3, s4 = st.columns(4)
+                        
+                        cpu_val = data['server']['cpu_percent']
+                        s1.metric("CPU Usage", f"{cpu_val}%")
+                        s1.progress(min(cpu_val / 100.0, 1.0))
+                        
+                        ram_val = data['server']['ram_percent']
+                        s2.metric(f"RAM Usage ({data['server']['ram_total_gb']} GB total)", f"{ram_val}%")
+                        s2.progress(min(ram_val / 100.0, 1.0))
+                        s2.caption(data['server'].get('ram_note', ''))
+
+                        disk_val = data['server']['disk_percent']
+                        s3.metric(f"Disk Usage ({data['server']['disk_free_gb']} GB free)", f"{disk_val}%")
+                        s3.progress(min(disk_val / 100.0, 1.0))
+                        
+                        s4.metric("Gateway Latency", f"{data['api_latency_ms']} ms")
+                        
+                        st.divider()
+                        
+                        st.subheader("Storage Infrastructure")
+                        d1, d2, d3, d4 = st.columns(4)
+                        
+                        db_stat = data['database']['status']
+                        db_icon = "🟢" if db_stat == "Online" else "🔴"
+                        d1.metric(f"{db_icon} Postgres DB", db_stat, f"{data['database']['latency_ms']} ms", delta_color="inverse")
+                        d2.metric("Total Users", data['database']['total_users'])
+                        
+                        qd_stat = data['qdrant']['status']
+                        qd_icon = "🟢" if qd_stat == "Online" else "🔴"
+                        d3.metric(f"{qd_icon} Qdrant Vector", qd_stat, f"{data['qdrant']['latency_ms']} ms", delta_color="inverse")
+                        d4.metric("Vectors Stored", data['qdrant']['vector_count'])
+                        
+                        st.divider()
+                        
+                        st.subheader("External Microservices")
+                        
+                        btn1, btn2, btn3 = st.columns(3)
+                        btn1.link_button("LangSmith (LLM Traces)", data['services']['langsmith_url'], use_container_width=True)
+                        btn2.link_button("Inngest (Background Jobs)", data['services']['inngest_url'], use_container_width=True)
+                        btn3.link_button("Render (Cloud Dashboard)", data['services']['render_url'], use_container_width=True)
+                        
+                    elif res.status_code in [401, 403]:
+                        st.error("Unauthorized Access! Your session may have expired.")
+                    else:
+                        st.error(f"Error fetching data: HTTP {res.status_code}")
+                        
+                except Exception as e:
+                    st.error("Backend offline or unreachable. Please check if FastAPI is running.")
+
+        render_live_dashboard()
