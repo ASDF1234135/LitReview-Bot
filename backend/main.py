@@ -26,6 +26,10 @@ from pydantic import BaseModel
 from DB.database import get_db, User, ChatThread
 from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form
 from typing import List
+import datetime
+import jwt
+from fastapi import Security
+from fastapi.security import OAuth2PasswordBearer
 
 load_dotenv()
 
@@ -34,6 +38,10 @@ inngest_client = inngest.Inngest(app_id="rag_agent_app", is_production=IS_CLOUD)
 
 app = FastAPI(title="AI Research Agent API")
 db = QdrantStorage()
+SECRET_KEY = os.getenv("SECRET_KEY", "default_secret_please_change_in_env")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 1440))
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
 
 
 app.add_middleware(
@@ -79,6 +87,55 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     password_bytes = plain_password.encode('utf-8')
     hashed_password_bytes = hashed_password.encode('utf-8')
     return bcrypt.checkpw(password_bytes, hashed_password_bytes)
+
+async def get_current_admin(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=401, detail="Could not validate credentials"
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        role: str = payload.get("role")
+        
+        if username is None or role is None:
+            raise credentials_exception
+            
+        if role != "admin":
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+            
+        return payload
+        
+    except jwt.PyJWTError:
+        raise credentials_exception
+    
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials or token expired",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        
+        username: str = payload.get("sub")
+        
+        if username is None:
+            raise credentials_exception
+            
+        return payload
+        
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired. Please log in again.")
+    except jwt.PyJWTError:
+        raise credentials_exception
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
 # --- Inngest Functions (背景任務) ---
 
@@ -139,7 +196,10 @@ def read_root():
     return {"status": "AI Research Agent is running"}
 
 @app.post("/api/chat")
-async def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(request: ChatRequest, current_user: dict = Depends(get_current_user)):
+    if request.user_id != current_user.get("sub"):
+        raise HTTPException(status_code=403, detail="Forbidden: User ID mismatch")
+    
     try:
         # 將 Generator 丟給 StreamingResponse，並設定 media_type
         return StreamingResponse(
@@ -150,7 +210,11 @@ async def chat_endpoint(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/history/{thread_id}")
-async def get_history_endpoint(thread_id: str):
+async def get_history_endpoint(thread_id: str, current_user: dict = Depends(get_current_user)):
+    db_thread = db.query(ChatThread).filter(ChatThread.thread_id == thread_id).first()
+    if db_thread and db_thread.username != current_user.get("sub"):
+        raise HTTPException(status_code=403, detail="Forbidden: You don't own this thread")
+    
     try:
         history = await get_thread_history(thread_id)
         return {"history": history}
@@ -160,8 +224,11 @@ async def get_history_endpoint(thread_id: str):
 @app.post("/api/trigger-ingest")
 async def trigger_ingest(
     files: List[UploadFile] = File(...), 
-    user_id: str = Form(...)
+    user_id: str = Form(...),
+    current_user: dict = Depends(get_current_user)
 ):
+    if user_id != current_user.get("sub"):
+        raise HTTPException(status_code=403, detail="Forbidden")
     
     events_to_dispatch = []
     os.makedirs("temp_uploads", exist_ok=True)
@@ -187,7 +254,10 @@ async def trigger_ingest(
     return {"status": "success", "message": f"Successfully dispatched {len(files)} background jobs."}
 
 @app.get("/api/files/{user_id}")
-async def get_files_endpoint(user_id: str):
+async def get_files_endpoint(user_id: str, current_user: dict = Depends(get_current_user)):
+    if user_id != current_user.get("sub"): 
+        raise HTTPException(status_code=403, detail="Forbidden")
+    
     try:
         files = db.get_user_files(user_id)
         return {"files": files}
@@ -195,7 +265,10 @@ async def get_files_endpoint(user_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/files/{user_id}/{filename}")
-async def delete_file_endpoint(user_id: str, filename: str):
+async def delete_file_endpoint(user_id: str, filename: str, current_user: dict = Depends(get_current_user)):
+    if user_id != current_user.get("sub"): 
+        raise HTTPException(status_code=403, detail="Forbidden")
+    
     try:
         success = db.delete_user_file(user_id, filename)
         if success:
@@ -228,6 +301,10 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
     
     return {"message": "Register Successed", "username": new_user.username}
 
+@app.get("/api/admin/health", dependencies=[Depends(get_current_admin)])
+async def get_system_health():
+    return {"status": "Welcome to the Admin Dashboard!"}
+
 @app.post("/api/login")
 def login_user(user: UserLogin, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.username == user.username).first()
@@ -237,16 +314,31 @@ def login_user(user: UserLogin, db: Session = Depends(get_db)):
             status_code=401, 
             detail="Error on Username or Password!"
         )
-        
-    return {"message": "Login Successed", "username": db_user.username}
 
-@app.get("/api/threads/{username}")
+    access_token = create_access_token(
+        data={
+            "sub": db_user.username, 
+            "role": db_user.role
+        }
+    )
+        
+    return {
+        "access_token": access_token, 
+        "token_type": "bearer", 
+        "username": db_user.username,
+        "role": db_user.role 
+    }
+
+@app.get("/api/threads/{username}", dependencies=[Depends(get_current_user)])
 def get_threads(username: str, db: Session = Depends(get_db)):
     threads = db.query(ChatThread).filter(ChatThread.username == username).order_by(ChatThread.updated_at.asc()).all()
     return {t.thread_id: t.title for t in threads}
 
 @app.post("/api/threads")
-def save_thread(thread: ThreadCreate, db: Session = Depends(get_db)):
+def save_thread(thread: ThreadCreate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    if thread.username != current_user.get("sub"): 
+        raise HTTPException(status_code=403, detail="Forbidden")
+    
     db_thread = db.query(ChatThread).filter(ChatThread.thread_id == thread.thread_id).first()
     if db_thread:
         db_thread.title = thread.title 
@@ -257,7 +349,10 @@ def save_thread(thread: ThreadCreate, db: Session = Depends(get_db)):
     return {"message": "Thread saved successfully"}
 
 @app.delete("/api/threads/{thread_id}")
-def delete_thread(thread_id: str, db: Session = Depends(get_db)):
+def delete_thread(thread_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    if thread.username != current_user.get("sub"): 
+        raise HTTPException(status_code=403, detail="Forbidden")
+    
     db_thread = db.query(ChatThread).filter(ChatThread.thread_id == thread_id).first()
     if db_thread:
         db.delete(db_thread)

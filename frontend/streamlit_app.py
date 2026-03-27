@@ -13,10 +13,9 @@ if "username" not in st.session_state:
     st.session_state["username"] = None
 
 if not st.session_state["authentication_status"]:
-    st.title("🤖 AI Research Agent")
+    st.title("AI Research Agent")
     st.write("Please login for the service")
     
-    # 使用 Tabs 切換登入與註冊
     tab_login, tab_register = st.tabs(["Login", "Register"])
     
     with tab_login:
@@ -36,6 +35,8 @@ if not st.session_state["authentication_status"]:
                     if res.status_code == 200:
                         st.session_state["authentication_status"] = True
                         st.session_state["username"] = res.json()["username"]
+                        st.session_state["access_token"] = res.json()["access_token"]
+                        st.session_state["role"] = res.json()["role"]
                         st.success("Login successful, loading...")
                         st.rerun()
                     else:
@@ -63,12 +64,14 @@ if not st.session_state["authentication_status"]:
                         st.error(f"Register failed: {res.json().get('detail', 'unknown error')}")
 elif st.session_state["authentication_status"]:
     USER_ID = st.session_state["username"]
+
+    def get_auth_headers():
+        return {"Authorization": f"Bearer {st.session_state.get('access_token', '')}"}
     
     with st.sidebar:
         st.write(f'Welcome, **{USER_ID}**')
         if st.button("Logout", use_container_width=True):
-            st.session_state["authentication_status"] = False
-            st.session_state["username"] = None
+            st.session_state.clear() 
             st.rerun()
         st.divider()
 
@@ -82,7 +85,7 @@ elif st.session_state["authentication_status"]:
 
     def load_threads_api(username):
         try:
-            res = requests.get(f"{API_BASE_URL}/api/threads/{username}")
+            res = requests.get(f"{API_BASE_URL}/api/threads/{username}", headers=get_auth_headers())
             if res.status_code == 200:
                 data = res.json()
                 return data if data else {}
@@ -91,14 +94,14 @@ elif st.session_state["authentication_status"]:
         return {}
 
     def save_thread_api(username, thread_id, title):
-        requests.post(f"{API_BASE_URL}/api/threads", json={
+        requests.post(f"{API_BASE_URL}/api/threads", headers=get_auth_headers(), json={
             "username": username,
             "thread_id": thread_id,
             "title": title
         })
         
     def delete_thread_api(thread_id):
-        requests.delete(f"{API_BASE_URL}/api/threads/{thread_id}")
+        requests.delete(f"{API_BASE_URL}/api/threads/{thread_id}", headers=get_auth_headers())
 
     # ==========================================
     # 2. 狀態初始化 (修復缺失的 messages 陣列)
@@ -123,7 +126,7 @@ elif st.session_state["authentication_status"]:
 
     def fetch_history(thread_id):
         try:
-            res = requests.get(f"{API_BASE_URL}/api/history/{thread_id}")
+            res = requests.get(f"{API_BASE_URL}/api/history/{thread_id}", headers=get_auth_headers())
             if res.status_code == 200:
                 return res.json().get("history", [])
         except:
@@ -150,7 +153,7 @@ elif st.session_state["authentication_status"]:
                         ]
                         data = {"user_id": USER_ID}
                         
-                        res = requests.post(f"{API_BASE_URL}/api/trigger-ingest", files=files_payload, data=data)
+                        res = requests.post(f"{API_BASE_URL}/api/trigger-ingest", files=files_payload, data=data, headers=get_auth_headers())
                         
                         if res.status_code == 200:
                             st.success(f"Successfully queued {len(uploaded_files)} files! Click Refresh in a few seconds.")
@@ -166,10 +169,10 @@ elif st.session_state["authentication_status"]:
         
         col2.button("🔄 Refresh", use_container_width=True)
         def delete_file_callback(filename):
-            requests.delete(f"{API_BASE_URL}/api/files/{USER_ID}/{filename}")
+            requests.delete(f"{API_BASE_URL}/api/files/{USER_ID}/{filename}", headers=get_auth_headers())
 
         try:
-            files_res = requests.get(f"{API_BASE_URL}/api/files/{USER_ID}")
+            files_res = requests.get(f"{API_BASE_URL}/api/files/{USER_ID}", headers=get_auth_headers())
             if files_res.status_code == 200:
                 files = files_res.json().get("files", [])
                 if not files:
@@ -189,8 +192,15 @@ elif st.session_state["authentication_status"]:
     # 4. 全新側邊欄 (Sidebar)
     # ==========================================
     with st.sidebar:
-        st.header("💬 Chat Sessions")
+
+        if st.session_state.get("role") == "admin":
+            st.caption("Admin Privileges")
+            if st.button("Enter Admin Dashboard", type="primary"):
+                st.session_state["view_mode"] = "admin"
+                st.rerun()
+            st.divider()
         
+        st.header("💬 Chat Sessions")
         if st.button("➕ New Chat", use_container_width=True, type="primary"):
             new_tid = f"Session_{uuid.uuid4().hex[:5]}"
             st.session_state.threads[new_tid] = "New Chat"
@@ -238,57 +248,91 @@ elif st.session_state["authentication_status"]:
     # ==========================================
     # 5. 主畫面 Chat Interface (結合 Streaming)
     # ==========================================
-    st.title("🤖 Autonomous Research Agent")
-    st.caption(f"Current Thread: `{st.session_state.current_thread_id}`")
+    current_view = st.session_state.get("view_mode", "chat")
 
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    if current_view == "chat":
+        st.title("🤖 Autonomous Research Agent")
+        st.caption(f"Current Thread: `{st.session_state.current_thread_id}`")
 
-    if user_query := st.chat_input("Ex: What is Active Learning?"):
-        
-        st.session_state.messages.append({"role": "user", "content": user_query})
-        with st.chat_message("user"):
-            st.markdown(user_query)
-        
-        with st.chat_message("assistant"):
-            status_container = st.status("🧠 Agent is analysing...", expanded=True)
-            answer_placeholder = st.empty() 
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        if user_query := st.chat_input("Ex: What is Active Learning?"):
             
+            st.session_state.messages.append({"role": "user", "content": user_query})
+            with st.chat_message("user"):
+                st.markdown(user_query)
+            
+            with st.chat_message("assistant"):
+                status_container = st.status("🧠 Agent is analysing...", expanded=True)
+                answer_placeholder = st.empty() 
+                
+                try:
+                    payload = {
+                        "message": user_query,
+                        "user_id": USER_ID,
+                        "thread_id": st.session_state.current_thread_id
+                    }
+                    
+                    response = requests.post(f"{API_BASE_URL}/api/chat", json=payload, stream=True, headers=get_auth_headers())
+                    
+                    if response.status_code == 200:
+                        final_answer = ""
+                        
+                        for line in response.iter_lines():
+                            if line:
+                                data = json.loads(line.decode('utf-8'))
+                                
+                                if data["type"] == "status":
+                                    status_container.write(data["content"])
+                                    
+                                elif data["type"] == "answer":
+                                    final_answer = extract_text(data["content"])
+                                    
+                        status_container.update(label="✅ Research Completed！", state="complete", expanded=False)
+                        answer_placeholder.markdown(final_answer)
+                        
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": final_answer
+                        })
+                        
+                    else:
+                        status_container.update(label="❌ Error!", state="error")
+                        st.error(f"Backend Error: {response.text}")
+                        
+                except Exception as e:
+                    status_container.update(label="❌ Connection Failed", state="error")
+                    st.error(f"Failed to reach backend: {e}")
+
+    elif current_view == "admin" and st.session_state.get("role") == "admin":
+        st.title("🎛️ System Triage Control Center")
+        if st.button("🔙 Back to Chat"):
+            st.session_state["view_mode"] = "chat"
+            st.rerun()
+            
+        st.divider()
+        
+        # 準備出示 JWT 通行證去敲後端的門
+        headers = {
+            "Authorization": f"Bearer {st.session_state.get('access_token')}"
+        }
+        
+        with st.spinner("Pinging microservices..."):
             try:
-                payload = {
-                    "message": user_query,
-                    "user_id": USER_ID,
-                    "thread_id": st.session_state.current_thread_id
-                }
+                # 呼叫受 JWT 保護的 API
+                res = requests.get(f"{API_BASE_URL}/api/admin/health", headers=headers)
                 
-                response = requests.post(f"{API_BASE_URL}/api/chat", json=payload, stream=True)
-                
-                if response.status_code == 200:
-                    final_answer = ""
-                    
-                    for line in response.iter_lines():
-                        if line:
-                            data = json.loads(line.decode('utf-8'))
-                            
-                            if data["type"] == "status":
-                                status_container.write(data["content"])
-                                
-                            elif data["type"] == "answer":
-                                final_answer = extract_text(data["content"])
-                                
-                    status_container.update(label="✅ Research Completed！", state="complete", expanded=False)
-                    answer_placeholder.markdown(final_answer)
-                    
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": final_answer
-                    })
-                    
+                if res.status_code == 200:
+                    data = res.json()
+                    st.success("Authentication Passed!")
+                    # 暫時先用 JSON 印出來，確認有接通
+                    st.json(data)
+                elif res.status_code == 401 or res.status_code == 403:
+                    st.error("🚨 Unauthorized Access! Invalid token or insufficient permissions.")
                 else:
-                    status_container.update(label="❌ Error!", state="error")
-                    st.error(f"Backend Error: {response.text}")
+                    st.error(f"Error: {res.status_code}")
                     
             except Exception as e:
-                status_container.update(label="❌ Connection Failed", state="error")
-                st.error(f"Failed to reach backend: {e}")
+                st.error("Backend offline or unreachable.")
