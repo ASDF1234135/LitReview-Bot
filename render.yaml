@@ -1,26 +1,29 @@
-# render.yaml
 services:
-  # 1. 部署 FastAPI (作為 Web Service，公開網路可存取)
   - type: web
     name: agent-backend
     env: docker
-    dockerCommand: uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2
-    plan: starter # Render 的付費方案 (需要記憶體來跑 RAG)
+    dockerCommand: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2
+    plan: starter
     envVars:
       - key: GEMINI_API_KEY
-        sync: false # 密鑰會在 Render 儀表板手動輸入
+        sync: false
       - key: POSTGRES_URI
         fromDatabase:
           name: agent-postgres
           property: connectionString
       - key: QDRANT_URL
-        value: http://agent-qdrant:6333 # 指向內部私有服務
+        value: http://agent-qdrant:6333
+      - key: SECRET_KEY
+        sync: false
+      - key: ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 1440
 
-  # 2. 部署 Streamlit (Web Service)
   - type: web
     name: agent-frontend
     env: docker
-    dockerCommand: streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    dockerCommand: streamlit run frontend/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
     plan: starter
     envVars:
       - key: API_BASE_URL
@@ -34,18 +37,16 @@ services:
       - key: INNGEST_SIGNING_KEY
         sync: false
 
-  # 3. 部署 Qdrant (作為 Private Service，不公開上網，保護資料)
   - type: pserv
     name: agent-qdrant
     env: docker
-    dockerfilePath: ./Dockerfile.qdrant # (見下方說明)
+    dockerfilePath: ./Dockerfile.qdrant
     plan: starter
     disk:
       name: qdrant-data
       mountPath: /qdrant/storage
       sizeGB: 5
 
-# 4. 部署 PostgreSQL (使用 Render 原生代管資料庫)
 databases:
   - name: agent-postgres
     plan: free
