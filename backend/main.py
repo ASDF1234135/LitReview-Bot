@@ -32,6 +32,7 @@ from fastapi import Security
 from fastapi.security import OAuth2PasswordBearer
 import time
 import psutil
+from sqlalchemy import desc
 
 load_dotenv()
 
@@ -375,6 +376,21 @@ async def get_system_health(db_session: Session = Depends(get_db)):
             "render_url": "https://dashboard.render.com/"
         }
     }
+
+@app.get("/api/admin/users/usage", dependencies=[Depends(get_current_admin)])
+def get_users_usage(db: Session = Depends(get_db)):
+    users = db.query(User).order_by(desc(User.total_tokens)).all()
+    
+    usage_data = []
+    for u in users:
+        usage_data.append({
+            "username": u.username,
+            "role": u.role,
+            "total_tokens": u.total_tokens or 0,
+            "estimated_cost_usd": round((u.total_tokens or 0) / 1_000_000 * 0.35, 4) 
+        })
+        
+    return {"usage_report": usage_data}
 
 @app.post("/api/login")
 def login_user(user: UserLogin, db: Session = Depends(get_db)):

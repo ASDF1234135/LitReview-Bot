@@ -315,82 +315,135 @@ elif st.session_state["authentication_status"]:
             st.rerun()
             
         st.divider()
+
+        tab_health, tab_cost = st.tabs(["System Health", "Cost Control & Token Usage"])
         
-        @st.fragment(run_every=5)
-        def render_live_dashboard():
-            headers = {
-                "Authorization": f"Bearer {st.session_state.get('access_token')}"
-            }
+        with tab_health:
+            @st.fragment(run_every=5)
+            def render_live_dashboard():
+                headers = {
+                    "Authorization": f"Bearer {st.session_state.get('access_token')}"
+                }
+                
+                with st.spinner("Fetching live metrics..."):
+                    try:
+                        res = requests.get(f"{API_BASE_URL}/api/admin/health", headers=headers)
+                        
+                        if res.status_code == 200:
+                            data = res.json()
+                            
+                            col_status, col_refresh = st.columns([4, 1])
+                            env_label = data.get("environment", "Unknown")
+                            
+                            with col_status:
+                                if data["status"] == "healthy":
+                                    st.success(f"All systems operational. Running on **{env_label}** (Latency: {data['api_latency_ms']}ms)")
+                                else:
+                                    st.warning(f"System degraded. Running on **{env_label}** (Latency: {data['api_latency_ms']}ms)")
+                            
+                            with col_refresh:
+                                st.button("Refresh Now", use_container_width=True)
+                            
+                            st.write("")
+                            
+                            st.subheader("Server Node (FastAPI)")
+                            s1, s2, s3, s4 = st.columns(4)
+                            
+                            cpu_val = data['server']['cpu_percent']
+                            s1.metric("CPU Usage", f"{cpu_val}%")
+                            s1.progress(min(cpu_val / 100.0, 1.0))
+                            
+                            ram_val = data['server']['ram_percent']
+                            s2.metric(f"RAM Usage ({data['server']['ram_total_gb']} GB total)", f"{ram_val}%")
+                            s2.progress(min(ram_val / 100.0, 1.0))
+                            s2.caption(data['server'].get('ram_note', ''))
+
+                            disk_val = data['server']['disk_percent']
+                            s3.metric(f"Disk Usage ({data['server']['disk_free_gb']} GB free)", f"{disk_val}%")
+                            s3.progress(min(disk_val / 100.0, 1.0))
+                            
+                            s4.metric("Gateway Latency", f"{data['api_latency_ms']} ms")
+                            
+                            st.divider()
+                            
+                            st.subheader("Storage Infrastructure")
+                            d1, d2, d3, d4 = st.columns(4)
+                            
+                            db_stat = data['database']['status']
+                            db_icon = "🟢" if db_stat == "Online" else "🔴"
+                            d1.metric(f"{db_icon} Postgres DB", db_stat, f"{data['database']['latency_ms']} ms", delta_color="inverse")
+                            d2.metric("Total Users", data['database']['total_users'])
+                            
+                            qd_stat = data['qdrant']['status']
+                            qd_icon = "🟢" if qd_stat == "Online" else "🔴"
+                            d3.metric(f"{qd_icon} Qdrant Vector", qd_stat, f"{data['qdrant']['latency_ms']} ms", delta_color="inverse")
+                            d4.metric("Vectors Stored", data['qdrant']['vector_count'])
+                            
+                            st.divider()
+                            
+                            st.subheader("External Microservices")
+                            btn1, btn2, btn3 = st.columns(3)
+                            btn1.link_button("LangSmith (LLM Traces)", data['services']['langsmith_url'], use_container_width=True)
+                            btn2.link_button("Inngest (Background Jobs)", data['services']['inngest_url'], use_container_width=True)
+                            btn3.link_button("Render (Cloud Dashboard)", data['services']['render_url'], use_container_width=True)
+                            
+                        elif res.status_code in [401, 403]:
+                            st.error("Unauthorized Access! Your session may have expired.")
+                        else:
+                            st.error(f"Error fetching data: HTTP {res.status_code}")
+                            
+                    except Exception as e:
+                        st.error("Backend offline or unreachable. Please check if FastAPI is running.")
+
+            render_live_dashboard()
+
+        with tab_cost:
+            st.subheader("User Token Consumption Leaderboard")
             
-            with st.spinner("Fetching live metrics..."):
+            headers = {"Authorization": f"Bearer {st.session_state.get('access_token')}"}
+            
+            with st.spinner("Fetching usage report..."):
                 try:
-                    res = requests.get(f"{API_BASE_URL}/api/admin/health", headers=headers)
+                    usage_res = requests.get(f"{API_BASE_URL}/api/admin/users/usage", headers=headers)
                     
-                    if res.status_code == 200:
-                        data = res.json()
+                    if usage_res.status_code == 200:
+                        usage_data = usage_res.json().get("usage_report", [])
                         
-                        col_status, col_refresh = st.columns([4, 1])
-                        env_label = data.get("environment", "Unknown")
-                        
-                        with col_status:
-                            if data["status"] == "healthy":
-                                st.success(f"All systems operational. Running on **{env_label}** (Latency: {data['api_latency_ms']}ms)")
-                            else:
-                                st.warning(f"System degraded. Running on **{env_label}** (Latency: {data['api_latency_ms']}ms)")
-                        
-                        with col_refresh:
-                            st.button("Refresh Now", use_container_width=True)
-                        
-                        st.write("")
-                        
-                        st.subheader("Server Node (FastAPI)")
-                        s1, s2, s3, s4 = st.columns(4)
-                        
-                        cpu_val = data['server']['cpu_percent']
-                        s1.metric("CPU Usage", f"{cpu_val}%")
-                        s1.progress(min(cpu_val / 100.0, 1.0))
-                        
-                        ram_val = data['server']['ram_percent']
-                        s2.metric(f"RAM Usage ({data['server']['ram_total_gb']} GB total)", f"{ram_val}%")
-                        s2.progress(min(ram_val / 100.0, 1.0))
-                        s2.caption(data['server'].get('ram_note', ''))
-
-                        disk_val = data['server']['disk_percent']
-                        s3.metric(f"Disk Usage ({data['server']['disk_free_gb']} GB free)", f"{disk_val}%")
-                        s3.progress(min(disk_val / 100.0, 1.0))
-                        
-                        s4.metric("Gateway Latency", f"{data['api_latency_ms']} ms")
-                        
-                        st.divider()
-                        
-                        st.subheader("Storage Infrastructure")
-                        d1, d2, d3, d4 = st.columns(4)
-                        
-                        db_stat = data['database']['status']
-                        db_icon = "🟢" if db_stat == "Online" else "🔴"
-                        d1.metric(f"{db_icon} Postgres DB", db_stat, f"{data['database']['latency_ms']} ms", delta_color="inverse")
-                        d2.metric("Total Users", data['database']['total_users'])
-                        
-                        qd_stat = data['qdrant']['status']
-                        qd_icon = "🟢" if qd_stat == "Online" else "🔴"
-                        d3.metric(f"{qd_icon} Qdrant Vector", qd_stat, f"{data['qdrant']['latency_ms']} ms", delta_color="inverse")
-                        d4.metric("Vectors Stored", data['qdrant']['vector_count'])
-                        
-                        st.divider()
-                        
-                        st.subheader("External Microservices")
-                        
-                        btn1, btn2, btn3 = st.columns(3)
-                        btn1.link_button("LangSmith (LLM Traces)", data['services']['langsmith_url'], use_container_width=True)
-                        btn2.link_button("Inngest (Background Jobs)", data['services']['inngest_url'], use_container_width=True)
-                        btn3.link_button("Render (Cloud Dashboard)", data['services']['render_url'], use_container_width=True)
-                        
-                    elif res.status_code in [401, 403]:
-                        st.error("Unauthorized Access! Your session may have expired.")
+                        import pandas as pd
+                        if usage_data:
+                            df = pd.DataFrame(usage_data)
+                            
+                            st.dataframe(
+                                df,
+                                column_config={
+                                    "username": "User Account",
+                                    "role": "Role",
+                                    "total_tokens": st.column_config.ProgressColumn(
+                                        "Total Tokens Used",
+                                        help="Total tokens processed by LLM",
+                                        format="%d",
+                                        min_value=0,
+                                        max_value=1000000,
+                                    ),
+                                    "estimated_cost_usd": st.column_config.NumberColumn(
+                                        "Est. Cost (USD)",
+                                        help="Estimated API cost based on Gemini pricing",
+                                        format="$%.4f"
+                                    )
+                                },
+                                hide_index=True,
+                                use_container_width=True
+                            )
+                            
+                            st.divider()
+                            st.caption("Token Usage Distribution")
+                            st.bar_chart(df.set_index("username")["total_tokens"])
+                            
+                        else:
+                            st.info("No usage data available yet.")
+                    elif usage_res.status_code in [401, 403]:
+                        st.error("Unauthorized! You need Admin privileges to view this data.")
                     else:
-                        st.error(f"Error fetching data: HTTP {res.status_code}")
-                        
+                        st.error(f"Failed to fetch usage data. Make sure the backend endpoint exists.")
                 except Exception as e:
-                    st.error("Backend offline or unreachable. Please check if FastAPI is running.")
-
-        render_live_dashboard()
+                    st.error(f"Backend offline: {e}")

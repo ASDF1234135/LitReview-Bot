@@ -3,7 +3,7 @@ services:
     name: agent-backend
     env: docker
     dockerCommand: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2
-    plan: starter
+    plan: standard
     envVars:
       - key: GEMINI_API_KEY
         sync: false
@@ -49,4 +49,4 @@ services:
 
 databases:
   - name: agent-postgres
-    plan: free
+    plan: starter

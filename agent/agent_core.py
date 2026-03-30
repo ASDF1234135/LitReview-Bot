@@ -5,6 +5,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
 import os
 import json
+from DB.database import SessionLocal, User
 
 from agent.tools import search_knowledge_base, search_arxiv_external, read_arxiv_paper, search_web_general
 
@@ -78,7 +79,25 @@ async def run_research_agent_stream(user_input: str, user_id: str, thread_id: st
                             "content": f"🛠️ Agent is using tool: `{tc['name']}`..."
                         }) + "\n"
                 else:
-                    # Agent 給出最終回答
+                    current_tokens = 0
+                    
+                    if hasattr(message, "usage_metadata") and message.usage_metadata:
+                        current_tokens = message.usage_metadata.get("total_tokens", 0)
+                    elif hasattr(message, "response_metadata") and "token_usage" in message.response_metadata:
+                        current_tokens = message.response_metadata["token_usage"].get("total_tokens", 0)
+                    
+                    if current_tokens > 0:
+                        try:
+                            with SessionLocal() as db:
+                                user_record = db.query(User).filter(User.username == user_id).first()
+                                if user_record:
+                                    user_record.total_tokens = (user_record.total_tokens or 0) + current_tokens
+                                    db.commit()
+                                    print(f"--- [Billing] User '{user_id}' consumed {current_tokens} tokens. ---")
+                        except Exception as e:
+                            print(f"--- [Billing Error] Failed to update token usage: {e} ---")
+
+
                     yield json.dumps({
                         "type": "answer", 
                         "content": message.content
