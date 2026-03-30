@@ -163,6 +163,8 @@ async def get_thread_history(thread_id: str):
     
     try:
         async with AsyncPostgresSaver.from_conn_string(DB_URI) as checkpointer:
+            await checkpointer.setup()
+            
             agent_executor = create_react_agent(
                 llm, 
                 tools, 
