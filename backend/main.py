@@ -59,7 +59,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
     user_id: str = "default_user"
-    thread_id: str = "thread_1"  # 用於記憶對話歷史
+    thread_id: str = "thread_1"
 
 class IngestRequest(BaseModel):
     file_path: str
@@ -140,15 +140,14 @@ def create_access_token(data: dict):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-# --- Inngest Functions (背景任務) ---
+# --- Inngest Functions ---
 
 @inngest_client.create_function(
     fn_id="RAG: Ingest User PDF",
     trigger=inngest.TriggerEvent(event="rag/ingest_pdf"),
-    concurrency=[inngest.Concurrency(limit=2)] # 限制同時處理的 PDF 數量，避免 OOM
+    concurrency=[inngest.Concurrency(limit=2)]
 )
 async def rag_ingest_pdf(ctx: inngest.Context):
-    # 1. 從 ctx 提取 event data
     data = ctx.event.data
     pdf_path = Path(data["pdf_path"])
     user_id = data["user_id"]
@@ -204,7 +203,6 @@ async def chat_endpoint(request: ChatRequest, current_user: dict = Depends(get_c
         raise HTTPException(status_code=403, detail="Forbidden: User ID mismatch")
     
     try:
-        # 將 Generator 丟給 StreamingResponse，並設定 media_type
         return StreamingResponse(
             run_research_agent_stream(request.message, request.user_id, request.thread_id),
             media_type="application/x-ndjson"
@@ -213,7 +211,7 @@ async def chat_endpoint(request: ChatRequest, current_user: dict = Depends(get_c
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/history/{thread_id}")
-async def get_history_endpoint(thread_id: str, current_user: dict = Depends(get_current_user)):
+async def get_history_endpoint(thread_id: str, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     db_thread = db.query(ChatThread).filter(ChatThread.thread_id == thread_id).first()
     if db_thread and db_thread.username != current_user.get("sub"):
         raise HTTPException(status_code=403, detail="Forbidden: You don't own this thread")
@@ -436,14 +434,22 @@ def save_thread(thread: ThreadCreate, db: Session = Depends(get_db), current_use
     return {"message": "Thread saved successfully"}
 
 @app.delete("/api/threads/{thread_id}")
-def delete_thread(thread_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    if thread.username != current_user.get("sub"): 
-        raise HTTPException(status_code=403, detail="Forbidden")
-    
+def delete_thread(
+    thread_id: str, 
+    db: Session = Depends(get_db), 
+    current_user: dict = Depends(get_current_user)
+):
     db_thread = db.query(ChatThread).filter(ChatThread.thread_id == thread_id).first()
-    if db_thread:
-        db.delete(db_thread)
-        db.commit()
+    
+    if not db_thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+        
+    if db_thread.username != current_user.get("sub"): 
+        raise HTTPException(status_code=403, detail="Forbidden: You don't own this thread")
+    
+    db.delete(db_thread)
+    db.commit()
+    
     return {"message": "Thread deleted successfully"}
 
 inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf])

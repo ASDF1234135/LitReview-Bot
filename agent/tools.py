@@ -1,6 +1,5 @@
 # tools.py
 import os
-import arxiv
 import requests
 import fitz  # PyMuPDF
 from langchain_core.tools import tool
@@ -8,11 +7,14 @@ from langchain_core.runnables import RunnableConfig
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
-
 from DB.vector_db import QdrantStorage
 from agent.data_loader import get_embeddings
+from dotenv import load_dotenv
 
 db = QdrantStorage()
+load_dotenv()
+OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY")
+
 
 sub_agent_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
@@ -58,104 +60,6 @@ def search_knowledge_base(query: str, config: RunnableConfig, strategy: str = "h
         output += f"Content: {text_content}\n\n"
     return output
 
-@tool
-def search_arxiv_external(query: str, max_results: int = 10) -> str:
-    """
-    Broadly search for research papers on ArXiv. 
-    Returns ONLY abstracts and IDs. Use 'read_arxiv_paper' to deeply analyze specific IDs found here.
-    """
-    print(f"--- [Tool] ArXiv Broad Search: {query} ---")
-    client = arxiv.Client()
-    search = arxiv.Search(query=query, max_results=max_results, sort_by=arxiv.SortCriterion.Relevance)
-    
-    output = "--- ARXIV SEARCH RESULTS (ABSTRACTS ONLY) ---\n"
-    
-    for r in client.results(search):
-        authors = ", ".join([author.name for author in r.authors][:3])
-        year = r.published.year if r.published else "Unknown"
-        
-        paper_text = (
-            f"Title: {r.title}\n"
-            f"ArXiv ID: {r.entry_id.split('/')[-1]}\n" # 只取 ID 數字部分
-            f"Year: {year} | Authors: {authors}\n"
-            f"Summary: {r.summary}\n"
-        )
-        output += paper_text + "-"*40 + "\n"
-        
-    return output
-
-@tool
-async def read_arxiv_paper(arxiv_id: str, extraction_points: list[str]) -> str:
-    """
-    Spawns a sub-agent to completely download, read, and extract highly specific information from a single ArXiv paper.
-    Use this AFTER finding a relevant paper ID using 'search_arxiv_external'.
-    
-    Args:
-        arxiv_id: The exact ArXiv ID of the paper (e.g., '1801.01234').
-        extraction_points: A list of specific, detailed questions or topics to extract. 
-                           Break down complex requests into distinct points.
-                           (e.g., ["What is the specific experimental design?", "List all hyperparameters used", "What are the limitations?"])
-    """
-    print(f"--- [Sub-Agent Tool] Deep reading paper ID: {arxiv_id} ---")
-    print(f"--- [Sub-Agent Tool] Focus points: {len(extraction_points)} items ---")
-    
-    try:
-        client = arxiv.Client()
-        search = arxiv.Search(id_list=[arxiv_id])
-        try:
-            paper = next(client.results(search))
-        except StopIteration:
-            return f"Error: Could not find paper with ID {arxiv_id} on ArXiv."
-            
-        pdf_url = paper.pdf_url
-        print(f"--- [Sub-Agent Tool] Downloading PDF from {pdf_url} ---")
-        
-        pdf_response = requests.get(pdf_url)
-        temp_pdf_path = f"temp_{arxiv_id.replace('/', '_')}.pdf"
-        
-        with open(temp_pdf_path, 'wb') as f:
-            f.write(pdf_response.content)
-            
-        doc = fitz.open(temp_pdf_path)
-        full_text = ""
-        for page in doc:
-            full_text += page.get_text()
-        doc.close()
-        
-        if os.path.exists(temp_pdf_path):
-            os.remove(temp_pdf_path)
-            
-        formatted_points = "\n".join([f"{i+1}. {pt}" for i, pt in enumerate(extraction_points)])
-            
-        prompt = PromptTemplate.from_template(
-            "You are a meticulous senior academic reviewer.\n"
-            "Read the following academic paper text and perform a targeted extraction.\n\n"
-            "You MUST address EACH of the following extraction points individually:\n"
-            "<extraction_points>\n"
-            "{points}\n"
-            "</extraction_points>\n\n"
-            "Rules:\n"
-            "1. Create a clear Markdown heading for each point (e.g., '### 1. Experimental Design').\n"
-            "2. Extract highly specific details, especially numbers, algorithms, datasets, and parameters.\n"
-            "3. Do NOT hallucinate. If a specific point is not mentioned in the text, write: 'Information not explicitly stated in the paper.'\n\n"
-            "Paper Text (Partial/Full):\n"
-            "--------------------------\n"
-            "{text}\n"
-            "--------------------------\n"
-            "Provide your highly structured report below:"
-        )
-        
-        chain = prompt | sub_agent_llm
-        
-        result = await chain.ainvoke({
-            "points": formatted_points, 
-            "text": full_text[:80000]
-        }) 
-        
-        return f"--- Deep Extraction Report for Paper {arxiv_id} ---\n{result.content}"
-        
-    except Exception as e:
-        return f"Failed to deeply read paper {arxiv_id}. Error: {str(e)}"
     
 ddg_search = DuckDuckGoSearchRun()
 
@@ -171,3 +75,167 @@ def search_web_general(query: str) -> str:
         return result
     except Exception as e:
         return f"Web search failed: {str(e)}"
+
+def reconstruct_abstract(inverted_index: dict) -> str:
+    """
+    OpenAlex API 不會直接回傳完整摘要字串，而是回傳 Inverted Index (倒排索引)。
+    這個函數用來將它還原回人類可讀的完整段落。
+    """
+    if not inverted_index:
+        return "No abstract available."
+    
+    # 找出最大的索引值來建立陣列
+    max_idx = max([idx for positions in inverted_index.values() for idx in positions])
+    words = [""] * (max_idx + 1)
+    
+    for word, positions in inverted_index.items():
+        for pos in positions:
+            words[pos] = word
+            
+    return " ".join(words)
+
+
+@tool
+def search_openalex_external(query: str, max_results: int = 5):
+    """
+    Broad sweep of OpenAlex to find candidate academic papers.
+    Returns abstracts, Open Access PDF links, and OpenAlex IDs.
+    """
+    print(f"--- [OpenAlex Tool] Fetching papers for: '{query}' ---")
+    
+    base_url = "https://api.openalex.org/works"
+    
+    query_params = {
+        "search": query,
+        "per-page": max_results,
+        "sort": "relevance_score:desc"
+    }
+
+    if OPENALEX_API_KEY:
+        query_params["api_key"] = OPENALEX_API_KEY
+
+    try:
+        response = requests.get(base_url, params=query_params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            
+            for work in data.get("results", []):
+                title = work.get("title", "Unknown Title")
+                
+                raw_id = work.get("id", "")
+                openalex_id = raw_id.split("/")[-1] if raw_id else "Unknown ID"
+                
+                oa_url = work.get("open_access", {}).get("oa_url", "No Free PDF available")
+                
+                abstract = reconstruct_abstract(work.get("abstract_inverted_index"))
+                
+                results.append(
+                    f"Title: {title}\n"
+                    f"OpenAlex ID: {openalex_id}\n"
+                    f"PDF Link: {oa_url}\n"
+                    f"Abstract: {abstract}"
+                )
+                
+            if not results:
+                return "No papers found on OpenAlex for this query."
+                
+            return "\n\n---\n\n".join(results)
+            
+        elif response.status_code == 429:
+             return "System Status: OpenAlex API rate limit exceeded. Please rely on private knowledge."
+        else:
+             return f"OpenAlex API Error: HTTP {response.status_code}"
+             
+    except Exception as e:
+        return f"Tool execution failed due to network error: {str(e)}. Please pivot to private knowledge."
+
+@tool
+def read_openalex_paper(openalex_id: str, extraction_points: list[str]) -> str:
+    """
+    Spawns a sub-agent to completely download, read, and extract highly specific information from a single OpenAlex paper.
+    Use this AFTER finding a relevant OpenAlex ID using 'search_openalex_external'.
+    
+    Args:
+        openalex_id: The exact OpenAlex ID of the paper (e.g., 'W2741809807').
+        extraction_points: A list of specific, detailed questions or topics to extract.
+    """
+    print(f"--- [Sub-Agent Tool] Deep reading OpenAlex ID: {openalex_id} ---")
+    
+    try:
+        work_url = f"https://api.openalex.org/works/{openalex_id}"
+
+        query_params = {}
+        if OPENALEX_API_KEY:
+            query_params["api_key"] = OPENALEX_API_KEY
+            
+        meta_res = requests.get(work_url, params=query_params, timeout=10)
+        
+        if meta_res.status_code != 200:
+            return f"Error: Could not retrieve metadata for OpenAlex ID {openalex_id}."
+            
+        work_data = meta_res.json()
+        pdf_url = work_data.get("open_access", {}).get("oa_url")
+        
+        if not pdf_url:
+            return f"Error: The paper {openalex_id} is behind a paywall or has no Open Access PDF available for deep reading."
+            
+        print(f"--- [Sub-Agent Tool] Downloading PDF from {pdf_url} ---")
+        
+        pdf_response = requests.get(pdf_url, headers=OPENALEX_HEADERS, timeout=15)
+        
+        if "application/pdf" not in pdf_response.headers.get('Content-Type', ''):
+            print("Warning: Retrieved URL is not a direct PDF. PyMuPDF might fail to parse.")
+
+        temp_pdf_path = f"temp_{openalex_id}.pdf"
+        
+        with open(temp_pdf_path, 'wb') as f:
+            f.write(pdf_response.content)
+            
+        # 3. 解析 PDF
+        doc = fitz.open(temp_pdf_path)
+        full_text = ""
+        for page in doc:
+            full_text += page.get_text()
+        doc.close()
+        
+        # 清理暫存檔
+        if os.path.exists(temp_pdf_path):
+            os.remove(temp_pdf_path)
+            
+        if not full_text.strip():
+             return f"Error: Failed to extract readable text from the downloaded file. It might be a scanned image or protected."
+            
+        # 4. 呼叫 LLM 進行資訊萃取 (沿用您原本完美的 Prompt)
+        formatted_points = "\n".join([f"{i+1}. {pt}" for i, pt in enumerate(extraction_points)])
+            
+        prompt = PromptTemplate.from_template(
+            "You are a meticulous senior academic reviewer.\n"
+            "Read the following academic paper text and perform a targeted extraction.\n\n"
+            "You MUST address EACH of the following extraction points individually:\n"
+            "<extraction_points>\n"
+            "{points}\n"
+            "</extraction_points>\n\n"
+            "Rules:\n"
+            "1. Create a clear Markdown heading for each point.\n"
+            "2. Extract highly specific details, especially numbers, algorithms, datasets, and parameters.\n"
+            "3. Do NOT hallucinate. If not stated, write: 'Information not explicitly stated.'\n\n"
+            "Paper Text:\n"
+            "--------------------------\n"
+            "{text}\n"
+            "--------------------------\n"
+            "Report:"
+        )
+        
+        chain = prompt | sub_agent_llm
+        
+        result = chain.invoke({
+            "points": formatted_points, 
+            "text": full_text[:80000]
+        }) 
+        
+        return f"--- Deep Extraction Report for Paper {openalex_id} ---\n{result.content}"
+        
+    except Exception as e:
+        return f"Failed to deeply read paper {openalex_id}. Error: {str(e)}"

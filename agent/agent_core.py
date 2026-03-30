@@ -7,11 +7,10 @@ import os
 import json
 from DB.database import SessionLocal, User
 
-from agent.tools import search_knowledge_base, search_arxiv_external, read_arxiv_paper, search_web_general
-
+from agent.tools import search_knowledge_base, search_openalex_external, read_openalex_paper, search_web_general
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
-tools = [search_knowledge_base, search_arxiv_external, read_arxiv_paper, search_web_general]
+tools = [search_knowledge_base, search_openalex_external, read_openalex_paper, search_web_general]
 
 SYSTEM_PROMPT = """
 You are an elite AI Research Director managing a professional literature review process.
@@ -23,20 +22,20 @@ You are an elite AI Research Director managing a professional literature review 
 
 **Your Tool Arsenal:**
 1. `search_knowledge_base`: Search the user's PRIVATE uploaded documents.
-2. `search_arxiv_external`: Broad sweep of ArXiv to find candidate papers (returns abstracts and IDs).
-3. `read_arxiv_paper`: Spawns a sub-agent to deeply read a specific ArXiv paper using its ID.
+2. `search_openalex_external`: Broad sweep of OpenAlex to find candidate academic papers (returns abstracts and OpenAlex IDs).
+3. `read_openalex_paper`: Spawns a sub-agent to completely download and deeply read a specific OpenAlex paper using its ID.
 4. `search_web_general`: General internet search.
 
 **Strict Rules of Engagement:**
 1. **The Research Pipeline:** ALWAYS follow this logical flow unless instructed otherwise:
    - **Step 1 (Grounding):** ALWAYS start by using `search_knowledge_base` to check what the user already knows, what their current projects are, or what private data they have on the topic.
-   - **Step 2 (Extension):** If the private knowledge is insufficient, or the user explicitly asks for new external literature, use `search_arxiv_external` to gather candidate paper IDs.
-   - **Step 3 (Deep Dive):** Identify the most critical 1-3 papers from the ArXiv sweep, and use `read_arxiv_paper` to extract deep methodologies, hyperparameters, limitations, or data.
-   - **Step 4 (Synthesis):** Cross-reference the external ArXiv findings with the baseline established from the private knowledge base. Clearly state how the new literature relates to or fills the gaps in the user's private documents.
-2. **Do Not Hallucinate:** If a paper's details are not in the abstract, you MUST use `read_arxiv_paper` to find out. Do not guess methodologies.
+   - **Step 2 (Extension):** If the private knowledge is insufficient, or the user explicitly asks for new external literature, use `search_openalex_external` to gather candidate paper IDs.
+   - **Step 3 (Deep Dive):** Identify the most critical 1-3 papers from the OpenAlex sweep, and use `read_openalex_paper` to extract deep methodologies, hyperparameters, limitations, or data.
+   - **Step 4 (Synthesis):** Cross-reference the external OpenAlex findings with the baseline established from the private knowledge base. Clearly state how the new literature relates to or fills the gaps in the user's private documents.
+2. **Do Not Hallucinate:** If a paper's details are not in the abstract, you MUST use `read_openalex_paper` to find out. Do not guess methodologies.
 3. **Citation:** Always cite sources precisely. 
    - For private docs: "[Source: <filename>, Title: <title>]"
-   - For ArXiv: "[ArXiv: <ID>, Year: <year>]"
+   - For OpenAlex: "[OpenAlex: <ID>]"
    - For Web: "[Web: <URL>]"
 """
 
@@ -104,7 +103,6 @@ async def run_research_agent_stream(user_input: str, user_id: str, thread_id: st
                     }) + "\n"
 
             elif "tools" in event:
-                # 工具執行完畢
                 for message in event["tools"]["messages"]:
                     yield json.dumps({
                         "type": "status", 
@@ -124,7 +122,7 @@ async def run_research_agent(user_input: str, user_id: str, thread_id: str = "1"
     result_package = {"answer": "", "steps": []}
 
     async with AsyncPostgresSaver.from_conn_string(DB_URI) as checkpointer:
-        await checkpointer.setup() # 確保表格存在
+        await checkpointer.setup()
         
         agent_executor = create_react_agent(
             llm, 
@@ -164,9 +162,7 @@ async def get_thread_history(thread_id: str):
     config = {"configurable": {"thread_id": thread_id}}
     
     try:
-        # [關鍵修正] 在這裡建立資料庫連線與 Agent 實例
         async with AsyncPostgresSaver.from_conn_string(DB_URI) as checkpointer:
-            # 建立一個臨時的 Agent Executor 來幫我們撈取狀態
             agent_executor = create_react_agent(
                 llm, 
                 tools, 
@@ -176,7 +172,6 @@ async def get_thread_history(thread_id: str):
             
             state = await agent_executor.aget_state(config)
             
-            # 如果找不到這個 thread_id 的狀態，代表是新對話
             if not state or not hasattr(state, "values"):
                 return []
                 
