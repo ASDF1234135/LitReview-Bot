@@ -6,6 +6,7 @@ from psycopg_pool import AsyncConnectionPool
 import os
 import json
 from DB.database import SessionLocal, User
+from pydantic import BaseModel, Field
 
 from agent.tools import search_knowledge_base, search_openalex_external, read_openalex_paper, search_web_general
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
@@ -17,7 +18,7 @@ You are an elite AI Research Director managing a professional literature review 
 
 **Hierarchy of Information Trust (Strictly Enforced):**
 1. **PRIVATE KNOWLEDGE** (`search_knowledge_base`): Your absolute ground truth and highest priority.
-2. **ARXIV PAPERS** (`search_arxiv_external` & `read_arxiv_paper`): Highly trusted academic extensions. Use this to fill gaps or find state-of-the-art updates.
+2. **ARXIV PAPERS** (`search_openalex_external` & `read_openalex_paper`): Highly trusted academic extensions. Use this to fill gaps or find state-of-the-art updates.
 3. **WEB SEARCH** (`search_web_general`): Lowest trust. Use ONLY for broad concepts, general tech news, or non-academic context.
 
 **Your Tool Arsenal:**
@@ -32,14 +33,63 @@ You are an elite AI Research Director managing a professional literature review 
    - **Step 2 (Extension):** If the private knowledge is insufficient, or the user explicitly asks for new external literature, use `search_openalex_external` to gather candidate paper IDs.
    - **Step 3 (Deep Dive):** Identify the most critical 1-3 papers from the OpenAlex sweep, and use `read_openalex_paper` to extract deep methodologies, hyperparameters, limitations, or data.
    - **Step 4 (Synthesis):** Cross-reference the external OpenAlex findings with the baseline established from the private knowledge base. Clearly state how the new literature relates to or fills the gaps in the user's private documents.
-2. **Do Not Hallucinate:** If a paper's details are not in the abstract, you MUST use `read_openalex_paper` to find out. Do not guess methodologies.
-3. **Citation:** Always cite sources precisely. 
-   - For private docs: "[Source: <filename>, Title: <title>]"
-   - For OpenAlex: "[OpenAlex: <ID>]"
+2. **Strict Domain Boundaries:** You are an Academic Research Tool, not a general-purpose chatbot. You are explicitly FORBIDDEN from engaging in casual conversation, creative writing, programming tutorials, or answering general knowledge questions.
+Evaluate EVERY prompt before acting. If the prompt is not a direct inquiry about academic literature or scientific methodologies, you MUST abort all operations and output exactly: "Error: Query falls outside the permitted academic research domain."
+3. **Do Not Hallucinate:** If a paper's details are not in the abstract, you MUST use `read_openalex_paper` to find out. Do not guess methodologies.
+4. **Do Not Use Internal Knowledge:** Answer strictly and exclusively based on the evidence returned by your tools. Your pre-trained knowledge is strictly forbidden. If the search results lack the direct proof needed to answer the query, you must answer "I don't know" without attempting to guess or infer.
+5. **Citation:** Always cite sources precisely. 
+   - For private docs: "[<Author(s)>, <Year>. <Title> | Source: Local_Knowledge_base]"
+   - For OpenAlex: "[<Author(s)>, <Year>. <Title> | Source: OpenAlex]"
    - For Web: "[Web: <URL>]"
+   - You need to provide a completed reference list at the end of the response when the numbers of referece are over 5.
 """
 
 DB_URI = os.getenv("POSTGRES_URI", "postgresql://admin:secretpassword@localhost:5432/agent_memory")
+
+
+class RouteDecision(BaseModel):
+    strategy: str = Field(description="The chosen strategy: 'direct', 'rewrite', or 'hyde'")
+    reasoning: str = Field(description="Brief explanation of why this strategy was chosen")
+
+router_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+router_chain = router_llm.with_structured_output(RouteDecision) 
+
+async def analyze_query_intent(query: str) -> RouteDecision:
+    prompt = f"""
+    You are an expert intent classifier for an Academic AI Research Assistant.
+    Analyze the user's query and route it to the MOST EFFICIENT retrieval strategy.
+
+    1. "direct": Use when the query contains highly specific keywords, proper nouns, algorithm names (e.g., PEGASUS, ALScope), or asks for specific factual numbers.
+    2. "rewrite": Use when the query is a comparison, contains multiple sub-questions, or is grammatically conversational and needs translation into formal search queries.
+    3. "hyde": Use when the query is vague, describes a concept or symptom without knowing the exact terminology, or asks about "a paper that does X" without naming it.
+
+    User Query: {query}
+    """
+    try:
+        return await router_chain.ainvoke(prompt)
+    except Exception as e:
+        print(f"[Router Error] Defaulting to direct. Error: {e}")
+        return RouteDecision(strategy="direct", reasoning="Fallback due to error")
+
+async def rewrite_query(query: str) -> str:
+    prompt = f"""
+    Rewrite the following conversational or complex user query into a concise, 
+    highly effective list of academic search keywords. Focus on core entities and methodologies.
+    Query: {query}
+    Output ONLY the keywords, separated by spaces.
+    """
+    res = await router_llm.ainvoke(prompt)
+    return res.content.strip()
+
+async def generate_hyde_document(query: str) -> str:
+    prompt = f"""
+    Write a short, hypothetical academic paragraph that answers the following query. 
+    Use formal scientific terminology, likely methodologies, and academic phrasing. 
+    Do not use introductory filler (e.g., "Here is a paragraph").
+    Query: {query}
+    """
+    res = await router_llm.ainvoke(prompt)
+    return res.content.strip()
 
 async def run_research_agent_stream(user_input: str, user_id: str, thread_id: str = "1"):
     """
@@ -52,8 +102,27 @@ async def run_research_agent_stream(user_input: str, user_id: str, thread_id: st
             "user_id": user_id
         }
     }
+
+    yield json.dumps({"type": "status", "content": "Analysing Question..."}) + "\n"
+    
+    decision = await analyze_query_intent(user_input)
+    strategy = decision.strategy.lower()
+    print(f"--- [Router] Strategy: {strategy} | Reason: {decision.reasoning} ---")
+    
+    final_input = user_input
+    
+    if strategy == "rewrite":
+        yield json.dumps({"type": "status", "content": "Transform to Acadamical Question..."}) + "\n"
+        optimized_query = await rewrite_query(user_input)
+        final_input = f"Original Query: {user_input}\nOptimized Search Terms: {optimized_query}"
+        
+    elif strategy == "hyde":
+        yield json.dumps({"type": "status", "content": "HyDE Activated..."}) + "\n"
+        hyde_doc = await generate_hyde_document(user_input)
+        final_input = f"Original Query: {user_input}\nHypothetical Context for Search: {hyde_doc}"
+
     inputs = {
-        "messages": [("user", f"User ID: {user_id}\nRequest: {user_input}")]
+        "messages": [("user", f"User ID: {user_id}\nRequest: {final_input}")]
     }
 
     async with AsyncPostgresSaver.from_conn_string(DB_URI) as checkpointer:
@@ -66,16 +135,14 @@ async def run_research_agent_stream(user_input: str, user_id: str, thread_id: st
             prompt=SYSTEM_PROMPT
         )
 
-        # astream 會在每個 Node 執行完畢時觸發
         async for event in agent_executor.astream(inputs, config=config):
             if "agent" in event:
                 message = event["agent"]["messages"][-1]
                 if message.tool_calls:
-                    # Agent 決定呼叫工具
                     for tc in message.tool_calls:
                         yield json.dumps({
                             "type": "status", 
-                            "content": f"🛠️ Agent is using tool: `{tc['name']}`..."
+                            "content": f"Agent is using tool: `{tc['name']}`..."
                         }) + "\n"
                 else:
                     current_tokens = 0
@@ -106,7 +173,7 @@ async def run_research_agent_stream(user_input: str, user_id: str, thread_id: st
                 for message in event["tools"]["messages"]:
                     yield json.dumps({
                         "type": "status", 
-                        "content": f"✅ Tool `{message.name}` completed, now reading..."
+                        "content": f"Tool `{message.name}` completed, now reading..."
                     }) + "\n"
 
 async def run_research_agent(user_input: str, user_id: str, thread_id: str = "1"):
@@ -116,9 +183,24 @@ async def run_research_agent(user_input: str, user_id: str, thread_id: str = "1"
             "user_id": user_id
         }
     }
+    decision = await analyze_query_intent(user_input)
+    strategy = decision.strategy.lower()
+    print(f"--- [Router] Strategy: {strategy} | Reason: {decision.reasoning} ---")
+    
+    final_input = user_input
+    
+    if strategy == "rewrite":
+        optimized_query = await rewrite_query(user_input)
+        final_input = f"Original Query: {user_input}\nOptimized Search Terms: {optimized_query}"
+        
+    elif strategy == "hyde":
+        hyde_doc = await generate_hyde_document(user_input)
+        final_input = f"Original Query: {user_input}\nHypothetical Context for Search: {hyde_doc}"
+
     inputs = {
-        "messages": [("user", f"User ID: {user_id}\nRequest: {user_input}")]
+        "messages": [("user", f"User ID: {user_id}\nRequest: {final_input}")]
     }
+
     result_package = {"answer": "", "steps": []}
 
     async with AsyncPostgresSaver.from_conn_string(DB_URI) as checkpointer:
@@ -191,11 +273,9 @@ async def get_thread_history(thread_id: str):
                 elif msg.type == "ai" and msg.content:
                     content = msg.content
                     
-                    # 處理 Gemini 可能回傳 List Block 的情況
                     if isinstance(content, list):
                         content = "".join([b.get("text", "") for b in content if isinstance(b, dict)])
                     
-                    # 確保真的有文字才加入
                     if isinstance(content, str) and content.strip():
                         formatted_history.append({"role": "assistant", "content": content})
                         

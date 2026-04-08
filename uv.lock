@@ -3171,6 +3171,8 @@ dependencies = [
     { name = "requests" },
     { name = "streamlit" },
     { name = "streamlit-authenticator" },
+    { name = "streamlit-cookies-controller" },
+    { name = "streamlit-cookies-manager" },
     { name = "tavily-python" },
     { name = "uvicorn" },
 ]
@@ -3207,6 +3209,8 @@ requires-dist = [
     { name = "requests", specifier = ">=2.32.5" },
     { name = "streamlit", specifier = ">=1.53.1" },
     { name = "streamlit-authenticator", specifier = ">=0.4.2" },
+    { name = "streamlit-cookies-controller", specifier = ">=0.0.4" },
+    { name = "streamlit-cookies-manager", specifier = ">=0.2.0" },
     { name = "tavily-python", specifier = ">=0.7.20" },
     { name = "uvicorn", specifier = ">=0.40.0" },
 ]
@@ -3693,6 +3697,31 @@ dependencies = [
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/83/47/837b158e1a5b0d187d20c6be22c46d84d12a8d3e8d7113b67ebb33e221c9/streamlit_authenticator-0.4.2-py3-none-any.whl", hash = "sha256:442acccef6af65e2b0feb15d5e9f68707f204c1d31c60673690d87179c7ca5b2", size = 43197, upload-time = "2025-03-01T20:36:07.566Z" },
+]
+
+[[package]]
+name = "streamlit-cookies-controller"
+version = "0.0.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "streamlit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b0/c8/7caf505d62faeb8c0f6e6b74b554e1c2b0c3ca46c0a39250445c574a5a18/streamlit-cookies-controller-0.0.4.tar.gz", hash = "sha256:f5df2543de858f1585dcb6e90f58f38aafbf313ee8e237c64663b2d9761583cc", size = 406305, upload-time = "2024-04-10T03:50:35.813Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/02/c6/3bbdfecf5009943bcb62d37e3fd4b3fe45e87137e449a50e3025170bc9f7/streamlit_cookies_controller-0.0.4-py3-none-any.whl", hash = "sha256:f97fec6acdeee9cb9e16da25c3fc91d404b5b0ddced87c1d9fa9c62f65ca3251", size = 409303, upload-time = "2024-04-10T03:50:33.458Z" },
+]
+
+[[package]]
+name = "streamlit-cookies-manager"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "streamlit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/15/d016f1b2e1c547fecf7782dac3860d2aad4e22b4c1664d78bb2a873163ef/streamlit-cookies-manager-0.2.0.tar.gz", hash = "sha256:498531778bd4a63267364e8986b3774319d3ba2f4ba65a92357196723966e4d4", size = 680070, upload-time = "2021-12-25T13:42:42.064Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/60/d4aefff016f9fe48d10c59b2e52ae823444525f973e7948821c9eefb4217/streamlit_cookies_manager-0.2.0-py3-none-any.whl", hash = "sha256:12503dc3367dfc2a780cb9e4a81ad791737806a7b9d1c25a006386e32aabe956", size = 690962, upload-time = "2021-12-25T13:42:46.493Z" },
 ]
 
 [[package]]

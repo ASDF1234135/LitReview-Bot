@@ -108,7 +108,8 @@ def search_openalex_external(query: str, max_results: int = 5):
     query_params = {
         "search": query,
         "per-page": max_results,
-        "sort": "relevance_score:desc"
+        "sort": "relevance_score:desc",
+        "filter":"open_access.is_oa:true"
     }
 
     if OPENALEX_API_KEY:
@@ -123,16 +124,25 @@ def search_openalex_external(query: str, max_results: int = 5):
             
             for work in data.get("results", []):
                 title = work.get("title", "Unknown Title")
+                year = work.get('publication_year', 'n.d.')
+                authors = work.get('authorships', [])
+                author_str = "Unknown Author"
+                if authors:
+                    first_author = authors[0].get('author', {}).get('display_name', 'Unknown')
+                    if len(authors) > 1:
+                        author_str = f"{first_author} et al."
+                    else:
+                        author_str = first_author
                 
                 raw_id = work.get("id", "")
                 openalex_id = raw_id.split("/")[-1] if raw_id else "Unknown ID"
-                
                 oa_url = work.get("open_access", {}).get("oa_url", "No Free PDF available")
                 
                 abstract = reconstruct_abstract(work.get("abstract_inverted_index"))
                 
                 results.append(
                     f"Title: {title}\n"
+                    f"citation_key: {author_str}, {year}\n"
                     f"OpenAlex ID: {openalex_id}\n"
                     f"PDF Link: {oa_url}\n"
                     f"Abstract: {abstract}"
@@ -183,7 +193,7 @@ def read_openalex_paper(openalex_id: str, extraction_points: list[str]) -> str:
             
         print(f"--- [Sub-Agent Tool] Downloading PDF from {pdf_url} ---")
         
-        pdf_response = requests.get(pdf_url, headers=OPENALEX_HEADERS, timeout=15)
+        pdf_response = requests.get(pdf_url, timeout=15)
         
         if "application/pdf" not in pdf_response.headers.get('Content-Type', ''):
             print("Warning: Retrieved URL is not a direct PDF. PyMuPDF might fail to parse.")

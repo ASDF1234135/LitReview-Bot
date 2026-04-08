@@ -3,9 +3,38 @@ import requests
 import uuid
 import os
 import json
+from streamlit_cookies_controller import CookieController
+from streamlit_cookies_manager import EncryptedCookieManager
+from dotenv import load_dotenv
+import time
+
+load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 st.set_page_config(page_title="AI Research Agent", page_icon="🤖", layout="wide")
+
+cookies = EncryptedCookieManager(
+    prefix="agent_",
+    password=os.getenv("SECRET_KEY") 
+)
+
+if not cookies.ready():
+    st.stop()
+
+saved_token = cookies.get("access_token")
+saved_username = cookies.get("username")
+saved_role = cookies.get("role")
+
+if saved_token and saved_username:
+    st.session_state["authentication_status"] = True
+    st.session_state["username"] = saved_username
+    st.session_state["access_token"] = saved_token
+    st.session_state["role"] = saved_role
+else:
+    if "authentication_status" not in st.session_state:
+        st.session_state["authentication_status"] = False
+    if "username" not in st.session_state:
+        st.session_state["username"] = None
 
 if "authentication_status" not in st.session_state:
     st.session_state["authentication_status"] = False
@@ -33,6 +62,11 @@ if not st.session_state["authentication_status"]:
                         "password": login_pass
                     })
                     if res.status_code == 200:
+                        cookies["access_token"] = res.json()["access_token"]
+                        cookies["username"] = res.json()["username"]
+                        cookies["role"] = res.json()["role"]
+                        cookies.save()
+
                         st.session_state["authentication_status"] = True
                         st.session_state["username"] = res.json()["username"]
                         st.session_state["access_token"] = res.json()["access_token"]
@@ -71,7 +105,13 @@ elif st.session_state["authentication_status"]:
     with st.sidebar:
         st.write(f'Welcome, **{USER_ID}**')
         if st.button("Logout", use_container_width=True):
+            cookies["access_token"] = ""
+            cookies["username"] = ""
+            cookies["role"] = ""
+            cookies.save()
+
             st.session_state.clear() 
+            time.sleep(0.5)
             st.rerun()
         st.divider()
 
@@ -103,9 +143,6 @@ elif st.session_state["authentication_status"]:
     def delete_thread_api(thread_id):
         requests.delete(f"{API_BASE_URL}/api/threads/{thread_id}", headers=get_auth_headers())
 
-    # ==========================================
-    # 2. 狀態初始化 (修復缺失的 messages 陣列)
-    # ==========================================
     if "threads" not in st.session_state:
         user_threads = load_threads_api(USER_ID)
         if not user_threads:
@@ -117,7 +154,6 @@ elif st.session_state["authentication_status"]:
     if "current_thread_id" not in st.session_state:
         st.session_state.current_thread_id = list(st.session_state.threads.keys())[-1]
 
-    # 👉 [補回] 初始化對話紀錄與最後載入的 Thread
     if "messages" not in st.session_state:
         st.session_state.messages = []
 

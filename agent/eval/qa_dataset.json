@@ -1,0 +1,333 @@
+[
+  {
+    "test_id": "GEN_001",
+    "query": "In your analysis of the experimental setup for evaluating Semantic Embedding Uncertainty (SEU), what specific generation temperature was utilized when drawing 5 responses per question across the Llama-3.1-8B-Instruct, Mistral-7B-Instruct, and Phi-3.5-mini-instruct architectures?",
+    "expected_source": [
+      "10173_Improving_Uncertainty_Qu.pdf"
+    ],
+    "ground_truth": "A temperature of 0.5 was utilized."
+  },
+  {
+    "test_id": "GEN_002",
+    "query": "Traditional Semantic Entropy approaches have historically relied on strict bidirectional entailment criteria. How does the proposed Semantic Embedding Uncertainty (SEU) framework theoretically resolve the hypersensitivity issues associated with binary entailment?",
+    "expected_source": [
+      "10173_Improving_Uncertainty_Qu.pdf"
+    ],
+    "ground_truth": "SEU leverages the average pairwise cosine similarity of full response continuous semantic vector embeddings. This captures semantic closeness more flexibly, allowing for minor variations in wording or additional correct information without the strict binary constraints of bidirectional entailment, thus preventing the overestimation of semantic uncertainty."
+  },
+  {
+    "test_id": "GEN_003",
+    "query": "When contrasting the fundamental mechanisms of uncertainty quantification, how does the Semantic Embedding Uncertainty (SEU) paradigm diverge from the standard Semantic Entropy (SE) methodology proposed by Kuhn et al. regarding the clustering of equivalent semantics?",
+    "expected_source": [
+      "10173_Improving_Uncertainty_Qu.pdf",
+      "4985_semantic_uncertainty_linguisti.pdf"
+    ],
+    "ground_truth": "Semantic Entropy (SE) clusters generations into equivalent semantic sets using a strict bidirectional entailment algorithm to calculate entropy over meaning space, which is sensitive to minor phrasing differences and can overestimate uncertainty. SEU circumvents discrete clustering and binary entailment entirely by computing the negative average pairwise cosine similarity across continuous semantic response embeddings."
+  },
+  {
+    "test_id": "GEN_004",
+    "query": "Within the ALLabel framework's multi-stage active learning pipeline, what are the three specific, sequentially executed active learning sampling strategies applied to construct the optimized retrieval corpus?",
+    "expected_source": [
+      "2025.emnlp-main.1278.pdf"
+    ],
+    "ground_truth": "Diversity sampling, similarity sampling, and uncertainty sampling."
+  },
+  {
+    "test_id": "GEN_005",
+    "query": "Standard uncertainty sampling strategies based on maximum entropy or minimum confidence are often incompatible with pre-trained LLMs lacking task-specific classification heads. How does the ALLabel architecture circumvent this architectural limitation during its uncertainty sampling phase?",
+    "expected_source": [
+      "2025.emnlp-main.1278.pdf"
+    ],
+    "ground_truth": "ALLabel introduces an uncertainty-similarity sampling strategy. It leverages a demonstrated negative correlation between similarity scores and LLM prediction perplexity, assuming that examples with lower similarity to the demonstration pool lead to higher uncertainty in the LLM's predictions."
+  },
+  {
+    "test_id": "GEN_006",
+    "query": "Both the MoRSD framework and the Active-Prompt methodology employ selective data curation to augment model reasoning capabilities. Critically compare their selection targets and end-goals within the LLM training lifecycle.",
+    "expected_source": [
+      "2025.findings-emnlp.413.pdf",
+      "Active Prompting with Chain-of-Thought for Large Language Models.pdf"
+    ],
+    "ground_truth": "MoRSD selects and evaluates high-quality, diverse rationale data specifically to fine-tune a smaller student model, aiming to distill chain-of-thought reasoning into the student architecture. Conversely, Active-Prompt uses uncertainty metrics to identify the most uncertain questions from a training pool for human annotation, aiming to construct optimal few-shot exemplars to improve a frozen LLM's in-context learning performance."
+  },
+  {
+    "test_id": "GEN_007",
+    "query": "According to the empirical findings on selective annotation, what exact relative performance gains does the graph-based 'vote-k' method achieve under strict annotation budgets of 18 and 100, relative to a random sampling baseline?",
+    "expected_source": [
+      "2209.01975v1.pdf"
+    ],
+    "ground_truth": "It achieves a 12.9% relative gain under an annotation budget of 18, and an 11.4% relative gain under a budget of 100."
+  },
+  {
+    "test_id": "GEN_008",
+    "query": "In the context of abstractive text summarization, the DUAL paper identifies critical flaws in monolithic active learning strategies. What are the specific theoretical shortcomings attributed to pure uncertainty-based and pure diversity-based sample selection approaches?",
+    "expected_source": [
+      "2503.00867v1.pdf"
+    ],
+    "ground_truth": "Pure uncertainty-based strategies are prone to selecting noisy samples that inherently possess high uncertainty, which harms the model when trained on them. Pure diversity-based strategies suffer from a limited exploration scope, often becoming confined to a tight region of the embedding space and failing to select samples that are truly representative of the overall dataset distribution."
+  },
+  {
+    "test_id": "GEN_009",
+    "query": "Addressing label noise remains a persistent challenge in active learning pipelines. Compare the noise-mitigation mechanisms introduced by the DUAL algorithm with the negative learning and LLM-mixture strategies utilized in the MoLLIA framework.",
+    "expected_source": [
+      "2503.00867v1.pdf",
+      "2601.15773v1.pdf"
+    ],
+    "ground_truth": "DUAL relies on combining diversity metrics alongside uncertainty queries (via IDDS and BAS) to bypass the selection of inherently noisy outliers common in pure uncertainty sampling. MoLLIA utilizes a Mixture of LLMs to generate more reliable pseudo-labels, monitors annotation discrepancy between the AL model and the LLM annotator, and explicitly applies a negative learning loss term to penalize the AL model for predicting consistently low-confidence negative labels."
+  },
+  {
+    "test_id": "GEN_010",
+    "query": "For the empirical validation of the MoLLIA framework, the authors specifically constrain their evaluation to deployable models under 10B parameters. Which five specific lightweight instruction-tuned LLMs were utilized in these experiments?",
+    "expected_source": [
+      "2601.15773v1.pdf"
+    ],
+    "ground_truth": "Gemma-2-9B-it, Llama-3.1-8B-Instruct, Mistral-7B-Instruct-v0.2, Qwen2.5-Coder-7B-Instruct, and Yi-1.5-9B."
+  },
+  {
+    "test_id": "GEN_011",
+    "query": "In evaluating uncertainty estimation in natural language generation, researchers draw a strict distinction between token-level uncertainty and semantic uncertainty. What is the fundamental theoretical difference between these two paradigms?",
+    "expected_source": [
+      "4985_semantic_uncertainty_linguisti.pdf"
+    ],
+    "ground_truth": "Token-level uncertainty quantifies the model's confidence over exact lexical forms and syntax (conflating syntax choice with meaning), which is problematic because multiple distinct token sequences can express the same concept. Semantic uncertainty groups sequences into semantic equivalence classes, calculating entropy over the actual meanings to isolate the model's uncertainty regarding the factual or conceptual content of the response."
+  },
+  {
+    "test_id": "GEN_012",
+    "query": "Compare the active learning sampling strategies proposed by the DUAL and LDCAL frameworks. Specifically, how do their mechanisms for balancing diversity and difficulty in text summarization datasets differ?",
+    "expected_source": [
+      "Active Learning for Abstractive Text Summarization via.pdf",
+      "2503.00867v1.pdf"
+    ],
+    "ground_truth": "DUAL utilizes a hybrid strategy combining Bayesian Active Summarization (uncertainty via BLEU variance) with IDDS (diversity) to iteratively select challenging yet representative embeddings. Conversely, LDCAL establishes an LLM-Determined Curriculum to sample data in an easy-to-hard order to ensure training stability, coupled with a Certainty Gain Maximization strategy that actively selects instances that optimally represent the distribution of the remaining unselected pool."
+  },
+  {
+    "test_id": "GEN_013",
+    "query": "During the evaluation of the Active-Prompt framework on complex reasoning tasks, what exact number of few-shot chain-of-thought exemplars was utilized for prompting the StrategyQA and AQuA datasets, respectively?",
+    "expected_source": [
+      "Active Prompting with Chain-of-Thought for Large Language Models.pdf"
+    ],
+    "ground_truth": "6 exemplars were used for StrategyQA, and 4 exemplars were used for AQuA."
+  },
+  {
+    "test_id": "GEN_014",
+    "query": "The ActiveLLM paper argues against traditional active learning query strategies like Margin of Confidence for few-shot scenarios. What underlying mechanistic flaw causes these traditional methods to suffer from the 'cold-start' problem?",
+    "expected_source": [
+      "ActiveLLM-Large Language Model-based Active Learning for Textual.pdf"
+    ],
+    "ground_truth": "Traditional methods necessitate iteratively training a classifier to compute uncertainty scores during the annotation process. In low-data or few-shot regimes, the model lacks sufficient initial labeled data to accurately measure informativeness or formulate reliable uncertainty estimates."
+  },
+  {
+    "test_id": "GEN_015",
+    "query": "Both ActiveLLM and FreeAL integrate large language models into the active learning loop, yet their architectural roles diverge significantly. Contrast the specific functional role of the LLM within these two collaborative learning paradigms.",
+    "expected_source": [
+      "ActiveLLM-Large Language Model-based Active Learning for Textual.pdf",
+      "FreeAL- Towards Human-Free Active Learning in the Era of Large.pdf"
+    ],
+    "ground_truth": "ActiveLLM utilizes the LLM solely as an active learning selector (query module) to identify and batch informative instances from an unlabeled pool, which are subsequently sent to human annotators to train a separate downstream model. In contrast, FreeAL utilizes the LLM as an active annotator to generate weak pseudo-labels entirely without human supervision, while a downstream Small Language Model (SLM) acts as a filter to distill task-specific knowledge and select high-quality demonstrations to feed back into the LLM."
+  },
+  {
+    "test_id": "GEN_016",
+    "query": "In the dual-model active learning architecture proposed for joint label and explanation generation, which specific sequence-to-sequence model architecture serves as the foundational backbone for both the explanation-generation and prediction modules?",
+    "expected_source": [
+      "Beyond Labels-Empowering Human Annotators with Natural Language.pdf"
+    ],
+    "ground_truth": "The T5 model architecture."
+  },
+  {
+    "test_id": "GEN_017",
+    "query": "Within the Causal-Guided Active Learning (CAL) framework for debiasing LLMs, what precise mathematical or semantic conditions must be met for an instance pair to be defined as a 'Counter Example Pair'?",
+    "expected_source": [
+      "Causal-Guided Active Learning for Debiasing Large Language Model.pdf"
+    ],
+    "ground_truth": "An instance pair is defined as a Counter Example Pair if the LLM's hidden state representations for the two instances are highly similar (similarity score exceeding a threshold tau), but the semantic similarity of their generated subsequent texts is exceptionally low (below a threshold alpha), indicating a violation of causal invariance where generation was driven by dataset bias rather than semantic features."
+  },
+  {
+    "test_id": "GEN_018",
+    "query": "Entropy maximization serves divergent purposes in Bayesian Active Learning for Preference Modeling (BAL-PM) and Semantic Entropy (SE) frameworks. Contrast how 'entropy' is mathematically and conceptually applied in these two uncertainty quantification methodologies.",
+    "expected_source": [
+      "Deep Bayesian Active Learning for Preference.pdf",
+      "4985_semantic_uncertainty_linguisti.pdf"
+    ],
+    "ground_truth": "In BAL-PM, entropy is calculated and maximized over the acquired prompt distribution in the base LLM's continuous feature space (a task-agnostic source) to promote selection diversity and prevent batching redundant inputs. In Semantic Entropy, entropy is computed over the probability distribution of discrete, semantically equivalent clusters of generated responses (a task-dependent source) to measure the epistemic uncertainty regarding the factual meaning of the LLM's output."
+  },
+  {
+    "test_id": "GEN_019",
+    "query": "In the LLM-driven active learning study by Rouzegar and Makrehchi, distinct confidence thresholds dictate the transition between one-shot and few-shot learning. What specific threshold percentages were established for the IMDB dataset versus the Movie Genres and Fake News datasets?",
+    "expected_source": [
+      "Enhancing Text Classification through LLM-Driven Active Learning and.pdf"
+    ],
+    "ground_truth": "A 70% confidence threshold was utilized for the IMDB dataset, while an 80% confidence threshold was applied to the Movie Genres and Fake News datasets."
+  },
+  {
+    "test_id": "GEN_020",
+    "query": "To adapt autoregressive language models into step-level reasoning evaluators, the REASONEVAL architecture requires a critical structural modification. What specific architectural substitution is made to the base model's final layer?",
+    "expected_source": [
+      "Evaluating Mathematical Reasoning Beyond Accuracy.pdf"
+    ],
+    "ground_truth": "The standard linear layer utilized for next-token prediction is completely replaced with a task-specific linear layer designed to output the probabilities for the predefined label classes (validity and redundancy) based on the last token of the reasoning step."
+  },
+  {
+    "test_id": "GEN_021",
+    "query": "In-context demonstration selection is pivotal for LLM performance. Compare the selection mechanisms of the FreeAL framework, which utilizes Small Language Models, with the retrieval techniques employed in the LLMAAA framework.",
+    "expected_source": [
+      "FreeAL- Towards Human-Free Active Learning in the Era of Large.pdf",
+      "LLMAAA.pdf"
+    ],
+    "ground_truth": "FreeAL leverages a robustly trained Small Language Model (SLM) to filter clean samples by tracking loss values via a Gaussian Mixture Model, subsequently applying k-medoids clustering to construct a diverse demonstration pool. LLMAAA, conversely, uses an automatic reweighting meta-learning objective during training and selects demonstrations by drawing k-NN samples from a small pool based on semantic similarity using Sentence-BERT embeddings."
+  },
+  {
+    "test_id": "GEN_022",
+    "query": "To rigorously test the robustness of the NoiseAL collaborative learning framework, the authors inject specific noise patterns. What are the three distinct types of synthetic label noise utilized in their experimental setup?",
+    "expected_source": [
+      "Hide and Seek in Noise Labels Noise-Robust Collaborative Active.pdf"
+    ],
+    "ground_truth": "Symmetric Noise, Asymmetric Noise, and Instance-dependent Noise."
+  },
+  {
+    "test_id": "GEN_023",
+    "query": "To scale the generation of high-quality instruction tags, the INSTAG framework leverages ChatGPT. What systematic post-processing techniques does INSTAG employ to denoise and normalize the automatically assigned intention tags?",
+    "expected_source": [
+      "INSTAG.pdf"
+    ],
+    "ground_truth": "INSTAG applies a tag normalization procedure that includes frequency filtering (to remove rare or long-tail tags), rule aggregation, semantic aggregation, and association aggregation to consolidate and denoise the raw tags into a standardized set."
+  },
+  {
+    "test_id": "GEN_024",
+    "query": "Active learning across massive unlabeled pools presents severe computational bottlenecks. Compare the two-stage hierarchical pruning mechanism in ActivePrune with the temporally-phased hybrid selection strategy proposed for Multimodal Fake News Detection.",
+    "expected_source": [
+      "LANGUAGE MODEL-DRIVEN DATA PRUNING.pdf",
+      "paper_hybridnet_preprint.pdf"
+    ],
+    "ground_truth": "ActivePrune utilizes a static two-stage pipeline: an initial fast evaluation using perplexity scores from an n-gram (KenLM) model to filter the bulk of the pool, followed by a high-quality data assessment utilizing a quantized LLM. The MFND hybrid framework employs a temporally-phased strategy: it initiates training using computationally cheap entropy-based uncertainty sampling on a BaseNet, and after a predetermined phase transition iteration, it shifts to LLM-guided disagreement sampling to specifically target ambiguous, hard-to-classify samples."
+  },
+  {
+    "test_id": "GEN_025",
+    "query": "According to the empirical findings in the LLMAAA study, what is the precise magnitude of annotated examples required for task-specific models to successfully outperform their teacher LLMs?",
+    "expected_source": [
+      "LLMAAA.pdf"
+    ],
+    "ground_truth": "Only hundreds of annotated examples."
+  },
+  {
+    "test_id": "GEN_026",
+    "query": "When deploying LLMs in the loop for low-resource named entity recognition, measuring training data leakage is critical. What specific technique was utilized to assess whether GPT-4-Turbo's pretraining corpus was contaminated by the MasakhaNER 2.0 dataset?",
+    "expected_source": [
+      "LMs in the Loop.pdf"
+    ],
+    "ground_truth": "Few-Shot In-Context Learning (ICL) was utilized to test if the LLM could complete a partial text sample from the dataset with an exact or near-exact match, which would indicate prior exposure to the dataset during pretraining."
+  },
+  {
+    "test_id": "GEN_027",
+    "query": "Recent tutorials and papers extensively debate the reliability of LLM uncertainty estimation. Synthesizing findings from 'On Verbalized Confidence Scores' and the ACL 2025 tutorial, contrast the robustness of verbalized confidence elicitation against consistency-based and introspection-based uncertainty measures.",
+    "expected_source": [
+      "On Verbalized Confidence Scores for LLMs.pdf",
+      "_ACL_2025__Tutorial_Presentation-8.pdf"
+    ],
+    "ground_truth": "Verbalized confidence elicitation is highly prompt-dependent, systematically prone to overconfidence (especially in smaller architectures), and fundamentally less reliable. In contrast, unsupervised UQ methods relying on consistency analysis (e.g., CoCoA) or introspection into internal model states (e.g., attention-based metrics like RAUQ) consistently yield stronger, more robust performance for hallucination detection and generalize better across diverse tasks."
+  },
+  {
+    "test_id": "GEN_028",
+    "query": "In the context of the Clue And Reasoning Prompting (CARP) methodology for few-shot text classification, what is the strict word-count limitation imposed on the Large Language Model when generating 'CLUES'?",
+    "expected_source": [
+      "Text Classification via Large Language Models.pdf"
+    ],
+    "ground_truth": "The generated clues are strictly limited to 15 words."
+  },
+  {
+    "test_id": "GEN_029",
+    "query": "To enhance the granularity of quality assessment in instruction tuning datasets, the 'WHAT MAKES GOOD DATA' paper introduces the Evol Quality metric. What is the specific iterative procedure and prompt strategy used to generate these nuanced quality scores?",
+    "expected_source": [
+      "WHAT MAKES GOOD DATA FOR ALIGNMENT.pdf"
+    ],
+    "ground_truth": "The procedure prompts ChatGPT to iteratively elevate the quality of a response across M iterations (M=5) by enhancing helpfulness, relevance, depth, and creativity. Following this evolution, ChatGPT is instructed to rank and score this diverse set of responses to derive a nuanced, fine-grained quality score."
+  },
+  {
+    "test_id": "GEN_030",
+    "query": "Active learning query strategies vary significantly in their approach to informative sampling. Contrast the traditional hybrid sampling mechanism of 'BADGE' with the generative approach of 'EAGLE' as categorized in recent selection-to-generation taxonomies.",
+    "expected_source": [
+      "From Selection to Generation.pdf",
+      "ALScope.pdf"
+    ],
+    "ground_truth": "BADGE represents a traditional hybrid selection strategy that operates strictly within an unlabeled pool by combining uncertainty and diversity metrics, explicitly applying k-Means++ clustering to gradient embeddings. EAGLE represents a generation-for-selection strategy where the model first samples based on conditional informativeness and subsequently leverages the LLM to actively synthesize entirely new in-context labels, generating annotations on demand rather than merely selecting pre-existing unlabeled instances."
+  },
+  {
+    "test_id": "GEN_031",
+    "query": "有篇論文提到傳統算不確定性的方法太嚴格了，稍微換個字就會算錯。他們提出了一個新的、用連續空間來算的方法，這個新方法是怎麼解決那個太嚴格的問題的？",
+    "expected_source": [
+      "10173_Improving_Uncertainty_Qu.pdf"
+    ],
+    "ground_truth": "該方法（Semantic Embedding Uncertainty, SEU）透過計算完整回覆的連續語義向量嵌入（embeddings）之間的平均成對餘弦相似度（cosine similarity）來捕捉語義相似性。這允許在措辭上有微小差異或包含額外正確資訊時，不會受到傳統雙向蘊涵（bidirectional entailment）二元分類的嚴格限制，從而避免模型過度高估語義的不確定性。"
+  },
+  {
+    "test_id": "GEN_032",
+    "query": "關於那個結合人類跟模型標註的主動學習框架，它在選資料的時候好像有三個步驟，分別是在看多樣性、相似度跟另一個什麼指標的，那三個步驟到底是什麼？",
+    "expected_source": [
+      "2025.emnlp-main.1278.pdf"
+    ],
+    "ground_truth": "該框架（ALLabel）在主動學習流程中挑選未標註樣本的三個階段分別為：多樣性採樣（diversity sampling）、相似度採樣（similarity sampling）以及不確定性採樣（uncertainty sampling）。"
+  },
+  {
+    "test_id": "GEN_033",
+    "query": "我記得有一篇做文本摘要的主動學習研究說，如果只看模型的不確定性或者只看資料的多樣性來挑樣本，都會有很大的缺點。可以具體說明這兩種極端方法的缺點是什麼嗎？",
+    "expected_source": [
+      "2503.00867v1.pdf"
+    ],
+    "ground_truth": "純不確定性策略的缺點在於，容易挑選到本質上就充滿雜訊（noisy）且具有高不確定性的異常樣本，將這些樣本用於訓練反而會損害模型表現。而純多樣性策略的缺點則是受限於探索範圍有限，通常侷限在嵌入空間（embedding space）的狹小區域內，無法選出能真正代表整體資料集分佈特徵的樣本。"
+  },
+  {
+    "test_id": "GEN_034",
+    "query": "有個用來幫學生模型挑選推論步驟的指標，好像是看加入推論後perplexity的變化，這個指標具體是怎麼定義的？",
+    "expected_source": [
+      "2025.findings-emnlp.413.pdf"
+    ],
+    "ground_truth": "該指標稱為「推論難度（Rationale Difficulty, RD）」，定義為給定某個推論步驟（rationale）前後，學生模型給出正確答案的困惑度（Perplexity, PPL）變化比例。具體公式為：給定推論步驟與問題後生成答案的 PPL，除以僅有問題時生成答案的 PPL。RD 值越低，代表該推論步驟越能幫助學生模型理解問題。"
+  },
+  {
+    "test_id": "GEN_035",
+    "query": "那篇用圖論方法（graph-based）選少量資料來標註的文章裡，如果最後在測試時，不是找最相似的例子，而是隨機抓幾個標註好的例子給模型看，效果會變差嗎？",
+    "expected_source": [
+      "2209.01975v1.pdf"
+    ],
+    "ground_truth": "是的，效果會變差。實驗指出，如果採用隨機提示檢索（random prompt retrieval），使用圖論方法（vote-k）選出的多樣且具代表性的標註樣本並無法發揮優勢，其表現甚至不一定能超越隨機挑選標註樣本的基準線。這顯示選擇性標註（selective annotation）必須與基於相似度的提示檢索（similarity-based prompt retrieval）結合，才能對上下文學習（in-context learning）產生實質幫助。"
+  },
+  {
+    "test_id": "GEN_036",
+    "query": "在主動學習中，有時候挑選資料的模型跟最後預測的模型會不一樣。有一篇研究把GPT-4這種超大模型當作挑選資料的工具，這樣做不用訓練模型嗎？它有什麼好處？",
+    "expected_source": [
+      "ActiveLLM-Large Language Model-based Active Learning for Textual.pdf"
+    ],
+    "ground_truth": "該研究（ActiveLLM）利用如 GPT-4 等大型語言模型作為查詢模組，因為這些模型具備零樣本學習（zero-shot learning）能力，所以不需要進行訓練。其好處在於：不需要耗時訓練模型，且可以直接透過免費的對話介面即時存取，無需機器學習的專業知識，非常適合實際應用；同時也解決了傳統主動學習方法在資料量極少時缺乏足夠數據來評估資訊量所面臨的「冷啟動（cold-start）」問題。"
+  },
+  {
+    "test_id": "GEN_037",
+    "query": "很多主動學習都只管標籤，但有一套「雙模型」的主動學習系統考慮了現實中專家還會給出解釋（explanation）的需求。這個系統裡面的兩個模型分別負責做什麼？",
+    "expected_source": [
+      "Beyond Labels-Empowering Human Annotators with Natural Language.pdf"
+    ],
+    "ground_truth": "該雙模型系統包含：1）一個「解釋生成模型（explanation-generation model）」，它接收資料內容，並在人類提供的解釋上進行微調，負責生成自由形式的自然語言解釋；2）一個「預測模型（prediction model）」，它接收原始資料內容與前一個模型生成的解釋作為輸入，並在人類標註的標籤上進行微調，最終負責預測任務的標籤。"
+  },
+  {
+    "test_id": "GEN_038",
+    "query": "有篇論文在講怎麼幫大型語言模型去偏見。裡面提到語義關係跟偏見關係最大的差別在於某種「因果」特性，這是什麼意思？",
+    "expected_source": [
+      "Causal-Guided Active Learning for Debiasing Large Language Model.pdf"
+    ],
+    "ground_truth": "語義關係具有「因果不變性（causal invariance）」，而偏見關係只是一種表面的統計相關性。例如，當大型語言模型作為裁判評估兩個回答時，最終的答案是由提示（prompt）和回答之間的「語義關係」決定的，這在所有樣本中都是成立的因果關係；但語料庫中可能存在如「回答的位置」與品質相關的偏見，這種偏見並不決定最終答案，在其他例子中可能會失效，因此只是一種不具備不變性的相關性。"
+  },
+  {
+    "test_id": "GEN_039",
+    "query": "讓模型自己說出信心分數（verbalized confidence）的研究中提到，只看 ECE 這個校準指標是不夠的，因為就算 ECE 很好，模型可能也沒給出有用的資訊。他們還用了哪些指標來衡量信心分數的好壞？",
+    "expected_source": [
+      "On Verbalized Confidence Scores for LLMs.pdf"
+    ],
+    "ground_truth": "除了測量平均校準度的 ECE 之外，該研究還使用了「資訊量（Informativeness）」和「意義性（Meaningfulness）」來衡量。資訊量透過評估信心分數的多樣性（如獨立分數的數量 n_distinct 和變異數 variance）來計算；意義性則透過計算特定資料集的信心分數分佈與所有資料集分數分佈之間的 KL 散度（Kullback-Leibler divergence）來衡量分數是否能真實反映資料集與任務的難度。"
+  },
+  {
+    "test_id": "GEN_040",
+    "query": "有個用來評估數學推論步驟的指標（REASONEVAL），他們在過濾一個叫 MMIQC 的資料集來微調模型時，設了什麼具體的分數門檻來挑選高品質的訓練資料？",
+    "expected_source": [
+      "Evaluating Mathematical Reasoning Beyond Accuracy.pdf"
+    ],
+    "ground_truth": "他們利用 REASONEVAL 指標移除了「有效性分數（validity scores）」低於 0.5，或者「冗餘分數（redundancy scores）」高於 0.15 的樣本，以確保選出高品質的推論資料進行微調。"
+  }
+
+]
